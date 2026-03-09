@@ -1,319 +1,314 @@
 import { WebClient, type ChatPostMessageResponse } from "@slack/web-api";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
-import type { WhaleAnalysis } from "../agents/topic-classifier.js";
+import type { WhaleAnalysisResult } from "../agents/whale-analyzer.js";
 
-/**
- * Market alert types
- */
-export type AlertType =
-  | "market_closing"
-  | "whale_detected"
-  | "price_movement"
-  | "daily_summary";
+// =============================================================================
+// Types
+// =============================================================================
 
 /**
  * Market alert payload
  */
 export interface MarketAlert {
-  type: AlertType;
   market: NormalizedMarket;
-  title: string;
-  message: string;
-  severity: "low" | "medium" | "high";
-  aiSummary?: string;
-  priceChange?: number;
-  trades?: NormalizedTrade[];
-  whaleAnalysis?: WhaleAnalysis;
+  largestBets?: NormalizedTrade[];
+  marketLean?: string;
+  momentum?: string;
+  recommendation?: string;
 }
 
 /**
- * Slack message attachment (Block Kit)
+ * Whale alert payload
  */
-interface SlackBlock {
-  type: string;
-  text?: {
-    type: string;
-    text: string;
-    emoji?: boolean;
-  };
-  elements?: Array<{
-    type: string;
-    text?: string | { type: string; text: string };
-    url?: string;
-    style?: string;
-  }>;
-  fields?: Array<{
-    type: string;
-    text: string;
-  }>;
-  accessory?: {
-    type: string;
-    text: { type: string; text: string };
-    url: string;
-  };
+export interface WhaleAlert {
+  market: NormalizedMarket;
+  trade: NormalizedTrade;
+  analysis: WhaleAnalysisResult;
+  traderInfo?: {
+    address: string;
+    isNew: boolean;
+  } | undefined;
 }
+
+/**
+ * Daily summary payload
+ */
+export interface DailySummary {
+  date: Date;
+  marketsTracked: number;
+  marketsActive: number;
+  marketsClosed: number;
+  whaleAlertsCount: number;
+  totalLargeTrades: number;
+  topMarkets?: Array<{
+    question: string;
+    volume: number;
+  }>;
+}
+
+/**
+ * Health report payload
+ */
+export interface HealthReport {
+  status: "healthy" | "degraded" | "unhealthy";
+  services: {
+    redis: boolean;
+    slack: boolean;
+    inngest: boolean;
+  };
+  uptime: number;
+  lastError?: string;
+}
+
+/**
+ * Rate limit tracking
+ */
+interface RateLimitState {
+  lastSent: number;
+  count: number;
+  resetAt: number;
+}
+
+// =============================================================================
+// Slack Notifier Service
+// =============================================================================
 
 /**
  * Slack Notifier Service
  * 
- * Sends formatted alerts to Slack channels.
+ * Sends formatted alerts to Slack channels with rate limiting.
  */
 export class SlackNotifier {
   private client: WebClient;
   private defaultChannel: string;
+  private rateLimits: Map<string, RateLimitState> = new Map();
+  
+  // Rate limit: max 10 messages per minute per channel
+  private readonly rateLimitWindow = 60 * 1000; // 1 minute
+  private readonly rateLimitMax = 10;
 
   constructor(token: string, defaultChannel: string) {
     this.client = new WebClient(token);
     this.defaultChannel = defaultChannel;
   }
 
+  // ===========================================================================
+  // Rate Limiting
+  // ===========================================================================
+
   /**
-   * Send a market alert
+   * Check and update rate limit for a channel
    */
-  async sendAlert(
+  private checkRateLimit(channel: string): boolean {
+    const now = Date.now();
+    const state = this.rateLimits.get(channel);
+
+    if (!state || now >= state.resetAt) {
+      // Reset or initialize
+      this.rateLimits.set(channel, {
+        lastSent: now,
+        count: 1,
+        resetAt: now + this.rateLimitWindow,
+      });
+      return true;
+    }
+
+    if (state.count >= this.rateLimitMax) {
+      console.warn(`[SlackNotifier] Rate limit exceeded for channel ${channel}`);
+      return false;
+    }
+
+    state.count++;
+    state.lastSent = now;
+    return true;
+  }
+
+  // ===========================================================================
+  // Alert Methods
+  // ===========================================================================
+
+  /**
+   * Send a market closing alert
+   */
+  async sendMarketAlert(
     alert: MarketAlert,
     channel?: string
-  ): Promise<ChatPostMessageResponse> {
-    const blocks = this.buildAlertBlocks(alert);
+  ): Promise<ChatPostMessageResponse | null> {
     const targetChannel = channel ?? this.defaultChannel;
+    
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
+    }
+
+    const { market, largestBets, marketLean, momentum, recommendation } = alert;
+    const timeUntilClose = market.endDate 
+      ? this.formatTimeUntil(market.endDate) 
+      : "Unknown";
+
+    const oddsText = market.outcomes
+      .map((o, i) => `${o} ${((market.outcomePrices[i] ?? 0) * 100).toFixed(0)}%`)
+      .join(" / ");
+
+    let betsText = "";
+    if (largestBets && largestBets.length > 0) {
+      betsText = largestBets
+        .slice(0, 3)
+        .map((t) => `  • $${(t.size * t.price).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} on ${t.outcome ?? "?"} (${this.formatTimeAgo(t.timestamp)})`)
+        .join("\n");
+    }
+
+    const message = `🔔 *MARKET CLOSING SOON* (${timeUntilClose})
+
+📊 *${market.question}*
+
+Current Odds: ${oddsText}
+${betsText ? `\n💰 *Largest Recent Bets:*\n${betsText}` : ""}
+${marketLean ? `\n📈 Market Lean: ${marketLean}` : ""}
+${momentum ? `   ${momentum}` : ""}
+${recommendation ? `\n💡 *Recommendation:* ${recommendation}` : ""}
+
+🔗 <https://polymarket.com/event/${market.slug}|View Market>`;
 
     return this.client.chat.postMessage({
       channel: targetChannel,
-      text: alert.title, // Fallback text
-      blocks,
+      text: message,
       unfurl_links: false,
-      unfurl_media: false,
     });
   }
 
   /**
-   * Build Block Kit blocks for an alert
+   * Send a whale activity alert
    */
-  private buildAlertBlocks(alert: MarketAlert): SlackBlock[] {
-    const blocks: SlackBlock[] = [];
-
-    // Header with emoji based on severity/type
-    const emoji = this.getAlertEmoji(alert);
-    blocks.push({
-      type: "header",
-      text: {
-        type: "plain_text",
-        text: `${emoji} ${alert.title}`,
-        emoji: true,
-      },
-    });
-
-    // Market question
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*${alert.market.question}*`,
-      },
-      accessory: {
-        type: "button",
-        text: {
-          type: "plain_text",
-          text: "View on Polymarket",
-        },
-        url: `https://polymarket.com/event/${alert.market.slug}`,
-      },
-    });
-
-    // Current odds
-    const oddsText = alert.market.outcomes
-      .map((outcome, i) => {
-        const price = alert.market.outcomePrices[i] ?? 0;
-        return `*${outcome}:* ${(price * 100).toFixed(1)}%`;
-      })
-      .join("  |  ");
-
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: oddsText,
-      },
-    });
-
-    // Alert-specific content
-    switch (alert.type) {
-      case "market_closing":
-        blocks.push(...this.buildClosingBlocks(alert));
-        break;
-      case "whale_detected":
-        blocks.push(...this.buildWhaleBlocks(alert));
-        break;
-      case "price_movement":
-        blocks.push(...this.buildPriceMovementBlocks(alert));
-        break;
-      case "daily_summary":
-        blocks.push(...this.buildDailySummaryBlocks(alert));
-        break;
-    }
-
-    // AI Summary if available
-    if (alert.aiSummary) {
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `🤖 *AI Analysis:*\n${alert.aiSummary}`,
-        },
-      });
-    }
-
-    // Context footer
-    blocks.push({
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `Volume: $${(alert.market.volume / 1000).toFixed(0)}k | Liquidity: $${(alert.market.liquidity / 1000).toFixed(0)}k | ${new Date().toISOString()}`,
-        },
-      ],
-    });
-
-    return blocks;
-  }
-
-  /**
-   * Get emoji for alert type/severity
-   */
-  private getAlertEmoji(alert: MarketAlert): string {
-    if (alert.severity === "high") return "🚨";
+  async sendWhaleAlert(
+    alert: WhaleAlert,
+    channel?: string
+  ): Promise<ChatPostMessageResponse | null> {
+    const targetChannel = channel ?? this.defaultChannel;
     
-    switch (alert.type) {
-      case "market_closing":
-        return "⏰";
-      case "whale_detected":
-        return "🐋";
-      case "price_movement":
-        return "📈";
-      case "daily_summary":
-        return "📊";
-      default:
-        return "📢";
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
     }
+
+    const { market, trade, analysis, traderInfo } = alert;
+    const tradeValue = trade.size * trade.price;
+    const timeUntilClose = market.endDate 
+      ? this.formatTimeUntil(market.endDate) 
+      : "Unknown";
+
+    let whaleSignals = "";
+    if (traderInfo?.isNew) whaleSignals += "  • New account ✓\n";
+    if (tradeValue >= 50000) whaleSignals += "  • Large bet ✓\n";
+    if (market.endDate && (market.endDate.getTime() - Date.now()) < 24 * 60 * 60 * 1000) {
+      whaleSignals += "  • Close to event ✓\n";
+    }
+
+    const message = `🚨 *WHALE ALERT* — Large Bet Detected
+
+📊 *Market:* ${market.question}
+⏰ *Closes in:* ${timeUntilClose}
+
+💰 *LARGE BET DETECTED:*
+  • $${tradeValue.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} on ${trade.outcome ?? "?"}
+  • Account: ${traderInfo?.address ?? trade.traderAddress ?? "Unknown"}${traderInfo?.isNew ? " (NEW)" : ""}
+  • Placed: ${this.formatTimeAgo(trade.timestamp)}
+${whaleSignals ? `\n⚠️ *Whale Signal*\n${whaleSignals}` : ""}
+📈 *Market Lean:* ${analysis.marketLean}
+   ${analysis.momentum}
+
+💡 *Recommendation:* ${this.formatRecommendation(analysis.recommendation)}
+   Confidence: ${analysis.confidence}
+
+🔗 <https://polymarket.com/event/${market.slug}|View Market>`;
+
+    return this.client.chat.postMessage({
+      channel: targetChannel,
+      text: message,
+      unfurl_links: false,
+    });
   }
 
   /**
-   * Build blocks for market closing alert
+   * Send daily summary
    */
-  private buildClosingBlocks(alert: MarketAlert): SlackBlock[] {
-    const blocks: SlackBlock[] = [];
+  async sendDailySummary(
+    summary: DailySummary,
+    channel?: string
+  ): Promise<ChatPostMessageResponse | null> {
+    const targetChannel = channel ?? this.defaultChannel;
     
-    if (alert.market.endDate) {
-      const timeUntil = this.formatTimeUntil(alert.market.endDate);
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `⏱️ *Closes in:* ${timeUntil}`,
-        },
-      });
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
     }
 
-    return blocks;
+    const dateStr = summary.date.toISOString().split("T")[0];
+    
+    let topMarketsText = "";
+    if (summary.topMarkets && summary.topMarkets.length > 0) {
+      topMarketsText = "\n\n*Top Markets by Volume:*\n" + 
+        summary.topMarkets
+          .slice(0, 5)
+          .map((m, i) => `${i + 1}. ${m.question} ($${(m.volume / 1000).toFixed(0)}k)`)
+          .join("\n");
+    }
+
+    const message = `📊 *Daily Summary — ${dateStr}*
+
+*Markets Tracked:* ${summary.marketsTracked}
+*Active Markets:* ${summary.marketsActive}
+*Closed Markets:* ${summary.marketsClosed}
+*Whale Alerts Sent:* ${summary.whaleAlertsCount}
+*Total Large Trades:* ${summary.totalLargeTrades}${topMarketsText}`;
+
+    return this.client.chat.postMessage({
+      channel: targetChannel,
+      text: message,
+      unfurl_links: false,
+    });
   }
 
   /**
-   * Build blocks for whale detection alert
+   * Send health report
    */
-  private buildWhaleBlocks(alert: MarketAlert): SlackBlock[] {
-    const blocks: SlackBlock[] = [];
-
-    if (alert.trades && alert.trades.length > 0) {
-      const tradesText = alert.trades
-        .slice(0, 5) // Show top 5 trades
-        .map((t) => {
-          const value = t.size * t.price;
-          const direction = t.side === "BUY" ? "🟢" : "🔴";
-          return `${direction} ${t.side} ${t.outcome ?? "?"}: $${value.toFixed(0)} @ ${(t.price * 100).toFixed(1)}%`;
-        })
-        .join("\n");
-
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*Recent Large Trades:*\n\`\`\`${tradesText}\`\`\``,
-        },
-      });
+  async sendHealthReport(
+    report: HealthReport,
+    channel?: string
+  ): Promise<ChatPostMessageResponse | null> {
+    const targetChannel = channel ?? this.defaultChannel;
+    
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
     }
 
-    if (alert.whaleAnalysis) {
-      const sentimentEmoji = {
-        bullish: "📈",
-        bearish: "📉",
-        neutral: "➡️",
-      }[alert.whaleAnalysis.sentiment];
+    const statusEmoji = {
+      healthy: "✅",
+      degraded: "⚠️",
+      unhealthy: "🔴",
+    }[report.status];
 
-      blocks.push({
-        type: "section",
-        fields: [
-          {
-            type: "mrkdwn",
-            text: `*Sentiment:* ${sentimentEmoji} ${alert.whaleAnalysis.sentiment}`,
-          },
-          {
-            type: "mrkdwn",
-            text: `*Confidence:* ${(alert.whaleAnalysis.confidence * 100).toFixed(0)}%`,
-          },
-        ],
-      });
-    }
+    const serviceStatus = Object.entries(report.services)
+      .map(([name, ok]) => `  • ${name}: ${ok ? "✅" : "❌"}`)
+      .join("\n");
 
-    return blocks;
+    const uptimeHours = (report.uptime / (60 * 60 * 1000)).toFixed(1);
+
+    const message = `${statusEmoji} *System Health Report*
+
+*Status:* ${report.status.toUpperCase()}
+*Uptime:* ${uptimeHours} hours
+
+*Services:*
+${serviceStatus}${report.lastError ? `\n\n*Last Error:*\n\`${report.lastError}\`` : ""}`;
+
+    return this.client.chat.postMessage({
+      channel: targetChannel,
+      text: message,
+      unfurl_links: false,
+    });
   }
 
-  /**
-   * Build blocks for price movement alert
-   */
-  private buildPriceMovementBlocks(alert: MarketAlert): SlackBlock[] {
-    const blocks: SlackBlock[] = [];
-
-    if (alert.priceChange !== undefined) {
-      const direction = alert.priceChange > 0 ? "📈" : "📉";
-      const sign = alert.priceChange > 0 ? "+" : "";
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `${direction} *Price Change:* ${sign}${alert.priceChange.toFixed(1)}%`,
-        },
-      });
-    }
-
-    return blocks;
-  }
-
-  /**
-   * Build blocks for daily summary
-   */
-  private buildDailySummaryBlocks(alert: MarketAlert): SlackBlock[] {
-    // Daily summary can be customized based on needs
-    return [];
-  }
-
-  /**
-   * Format time until a date
-   */
-  private formatTimeUntil(date: Date): string {
-    const now = new Date();
-    const diffMs = date.getTime() - now.getTime();
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffMins < 60) {
-      return `${diffMins} minutes`;
-    } else if (diffHours < 24) {
-      return `${diffHours} hours`;
-    } else {
-      return `${diffDays} days`;
-    }
-  }
+  // ===========================================================================
+  // Utility Methods
+  // ===========================================================================
 
   /**
    * Send a simple text message
@@ -321,9 +316,15 @@ export class SlackNotifier {
   async sendMessage(
     text: string,
     channel?: string
-  ): Promise<ChatPostMessageResponse> {
+  ): Promise<ChatPostMessageResponse | null> {
+    const targetChannel = channel ?? this.defaultChannel;
+    
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
+    }
+
     return this.client.chat.postMessage({
-      channel: channel ?? this.defaultChannel,
+      channel: targetChannel,
       text,
     });
   }
@@ -337,6 +338,60 @@ export class SlackNotifier {
       return result.ok === true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Format time until a date
+   */
+  private formatTimeUntil(date: Date): string {
+    const diffMs = date.getTime() - Date.now();
+    if (diffMs < 0) return "Closed";
+    
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffMins < 60) {
+      return `${diffMins} min`;
+    } else if (diffHours < 24) {
+      return `${diffHours} hours`;
+    } else {
+      return `${diffDays} days`;
+    }
+  }
+
+  /**
+   * Format time ago
+   */
+  private formatTimeAgo(date: Date): string {
+    const diffMs = Date.now() - date.getTime();
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+
+    if (diffMins < 60) {
+      return `${diffMins} minutes ago`;
+    } else if (diffHours < 24) {
+      return `${diffHours} hours ago`;
+    } else {
+      const diffDays = Math.floor(diffHours / 24);
+      return `${diffDays} days ago`;
+    }
+  }
+
+  /**
+   * Format recommendation text
+   */
+  private formatRecommendation(rec: string): string {
+    switch (rec) {
+      case "LEAN_YES":
+        return "Consider YES position";
+      case "LEAN_NO":
+        return "Consider NO position";
+      case "HOLD":
+        return "Hold / Wait for more signals";
+      default:
+        return rec;
     }
   }
 }

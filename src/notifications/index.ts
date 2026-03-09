@@ -5,4 +5,9 @@
  */
 
 export { SlackNotifier } from "./slack.js";
-export type { MarketAlert, AlertType } from "./slack.js";
+export type { 
+  MarketAlert, 
+  WhaleAlert, 
+  DailySummary, 
+  HealthReport 
+} from "./slack.js";

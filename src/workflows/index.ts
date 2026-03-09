@@ -2,8 +2,9 @@ import { Inngest } from "inngest";
 import { GammaApiClient } from "../api/gamma-client.js";
 import { ClobApiClient } from "../api/clob-client.js";
 import { MarketCache } from "../cache/redis.js";
-import { TopicClassifier, WhaleAnalyzer } from "../agents/topic-classifier.js";
-import { SlackNotifier, type MarketAlert } from "../notifications/slack.js";
+import { TopicClassifier } from "../agents/topic-classifier.js";
+import { WhaleAnalyzer } from "../agents/whale-analyzer.js";
+import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary } from "../notifications/slack.js";
 import { getConfig } from "../config/loader.js";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
@@ -51,6 +52,23 @@ function hydrateTrade(data: unknown): NormalizedTrade {
     timestamp: new Date(trade.timestamp as string),
     outcome: trade.outcome as string | null,
     traderAddress: trade.traderAddress as string | null,
+  };
+}
+
+/**
+ * Hydrate whale analysis result (with nested trades)
+ */
+function hydrateWhaleAnalysis(data: unknown): import("../agents/whale-analyzer.js").WhaleAnalysisResult {
+  const analysis = data as Record<string, unknown>;
+  const largestBets = (analysis.largestBets as unknown[])?.map(hydrateTrade) ?? [];
+  return {
+    hasWhaleActivity: analysis.hasWhaleActivity as boolean,
+    largestBets,
+    marketLean: analysis.marketLean as "YES" | "NO" | "NEUTRAL",
+    momentum: analysis.momentum as string,
+    recommendation: analysis.recommendation as "LEAN_YES" | "LEAN_NO" | "HOLD",
+    confidence: analysis.confidence as "HIGH" | "MEDIUM" | "LOW",
+    reasoning: analysis.reasoning as string,
   };
 }
 
@@ -105,12 +123,15 @@ const discoverMarkets = inngest.createFunction(
       return { scanned: markets.length, matched: markets.length };
     }
 
-    // Step 3: Classify markets by topics
-    const matchedMarketsRaw = await step.run("classify-markets", async () => {
-      const filtered = await classifier.filterByTopics(markets, topics, 0.6);
-      console.log(`[discover-markets] ${filtered.length}/${markets.length} markets match topics`);
-      return filtered;
+    // Step 3: Classify markets by topics (using batchClassify)
+    const classificationResults = await step.run("classify-markets", async () => {
+      const results = await classifier.batchClassify(markets, topics);
+      const relevant = results.filter((r) => r.isRelevant && r.relevanceScore >= 60);
+      console.log(`[discover-markets] ${relevant.length}/${markets.length} markets match topics`);
+      return relevant.map((r) => r.market);
     });
+
+    const matchedMarketsRaw = classificationResults;
 
     const matchedMarkets = (matchedMarketsRaw as unknown[]).map(hydrateMarket);
 
@@ -201,41 +222,37 @@ const monitorTrades = inngest.createFunction(
         }
       });
 
-      // Run AI analysis on whale activity
-      const analysis = await step.run(`analyze-whales-${market.id}`, async () => {
-        return analyzer.analyzeWhaleActivity(
-          market.question,
-          newTrades.map((t) => ({
-            side: t.side,
-            size: t.size,
-            price: t.price,
-            outcome: t.outcome,
-            timestamp: t.timestamp,
-          }))
-        );
+      // Run AI analysis on whale activity (using analyzeTrades)
+      const analysisRaw = await step.run(`analyze-whales-${market.id}`, async () => {
+        return analyzer.analyzeTrades(market, newTrades);
       });
+
+      // Hydrate analysis (Date objects from JSON)
+      const analysis = hydrateWhaleAnalysis(analysisRaw);
 
       // Send whale alert (throttled per market)
       const wasRecentlyAlerted = await step.run(`check-whale-alert-${market.id}`, async () => {
         // Use a separate key for whale alerts (distinct from closing alerts)
-        const key = `whale-alerted:${market.id}`;
         const exists = await cache.wasAlerted(market.id);
         return exists;
       });
 
-      if (!wasRecentlyAlerted && analysis.confidence > 0.5) {
+      if (!wasRecentlyAlerted && analysis.hasWhaleActivity) {
         await step.run(`send-whale-alert-${market.id}`, async () => {
-          const alert: MarketAlert = {
-            type: "whale_detected",
-            market,
-            title: "Whale Activity Detected",
-            message: analysis.summary,
-            severity: analysis.confidence > 0.7 ? "high" : "medium",
-            aiSummary: analysis.summary,
-            trades: newTrades,
-            whaleAnalysis: { ...analysis, marketId: market.id },
-          };
-          await notifier.sendAlert(alert);
+          // Get the largest trade for the alert
+          const largestTrade = analysis.largestBets[0];
+          if (largestTrade) {
+            const whaleAlert: WhaleAlert = {
+              market,
+              trade: largestTrade,
+              analysis,
+              traderInfo: largestTrade.traderAddress ? {
+                address: largestTrade.traderAddress,
+                isNew: false, // Would need external data to determine
+              } : undefined,
+            };
+            await notifier.sendWhaleAlert(whaleAlert);
+          }
           // Mark as alerted for 15 minutes
           await cache.markAlerted(market.id, 900);
         });
@@ -294,13 +311,9 @@ const closeAlert = inngest.createFunction(
         if (!wasAlerted) {
           await step.run(`send-close-alert-${market.id}`, async () => {
             const alert: MarketAlert = {
-              type: "market_closing",
               market,
-              title: "Market Closing Soon",
-              message: `${market.question} closes in ~30 minutes`,
-              severity: "medium",
             };
-            await notifier.sendAlert(alert);
+            await notifier.sendMarketAlert(alert);
             // Mark as alerted for 1 hour (won't re-alert)
             await cache.markAlerted(market.id, 3600);
           });
@@ -367,19 +380,22 @@ const dailySummary = inngest.createFunction(
     const closedMarkets = markets.filter((m) => m.endDate && m.endDate < new Date());
     const activeMarkets = markets.filter((m) => m.endDate && m.endDate >= new Date());
 
-    // Send daily summary to Slack
+    // Send daily summary to Slack using sendDailySummary
     await step.run("send-summary", async () => {
-      const summaryText = `📊 *Daily Summary*
+      const summary: DailySummary = {
+        date: new Date(),
+        marketsTracked: stats.marketsTracked,
+        marketsActive: activeMarkets.length,
+        marketsClosed: closedMarkets.length,
+        whaleAlertsCount: stats.marketsWithWhaleActivity,
+        totalLargeTrades: stats.totalLargeTrades,
+        topMarkets: activeMarkets.slice(0, 5).map((m) => ({
+          question: m.question,
+          volume: m.volume,
+        })),
+      };
 
-*Markets Tracked Today:* ${stats.marketsTracked}
-*Active Markets:* ${activeMarkets.length}
-*Closed Markets:* ${closedMarkets.length}
-*Markets with Whale Activity:* ${stats.marketsWithWhaleActivity}
-*Total Large Trades (>$50k):* ${stats.totalLargeTrades}
-
-${activeMarkets.length > 0 ? `\n*Still Active:*\n${activeMarkets.slice(0, 5).map((m) => `• ${m.question}`).join("\n")}${activeMarkets.length > 5 ? `\n...and ${activeMarkets.length - 5} more` : ""}` : ""}`;
-
-      await notifier.sendMessage(summaryText);
+      await notifier.sendDailySummary(summary);
     });
 
     console.log(`[daily-summary] Summary sent: ${stats.marketsTracked} markets tracked`);
