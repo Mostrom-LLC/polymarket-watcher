@@ -163,4 +163,10 @@ export interface ApiClientOptions {
   timeout?: number;
   retries?: number;
   retryDelay?: number;
+  /** Rate limit: requests per second (default: 5) */
+  requestsPerSecond?: number;
+  /** Rate limit: max concurrent requests (default: 3) */
+  maxConcurrent?: number;
+  /** Enable debug logging */
+  debug?: boolean;
 }

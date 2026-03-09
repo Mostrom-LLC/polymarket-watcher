@@ -4,7 +4,10 @@
  * This module provides typed clients for interacting with the Polymarket APIs.
  */
 
-// Export clients
+// Export unified client (recommended)
+export { PolymarketClient, type Market, type Trade } from "./polymarket-client.js";
+
+// Export individual clients (advanced usage)
 export { GammaApiClient } from "./gamma-client.js";
 export { ClobApiClient } from "./clob-client.js";
 
