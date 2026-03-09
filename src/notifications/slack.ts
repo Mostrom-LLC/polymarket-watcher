@@ -1,4 +1,4 @@
-import { WebClient, type ChatPostMessageResponse } from "@slack/web-api";
+import { WebClient, type ChatPostMessageResponse, type KnownBlock, type Block } from "@slack/web-api";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 import type { WhaleAnalysisResult } from "../agents/whale-analyzer.js";
 
@@ -157,21 +157,86 @@ export class SlackNotifier {
         .join("\n");
     }
 
-    const message = `🔔 *MARKET CLOSING SOON* (${timeUntilClose})
+    const fallbackText = `🔔 MARKET CLOSING SOON (${timeUntilClose}) - ${market.question}`;
 
-📊 *${market.question}*
+    // Block Kit formatted message
+    const blocks: (KnownBlock | Block)[] = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: `🔔 MARKET CLOSING SOON (${timeUntilClose})`,
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*${market.question}*`,
+        },
+      },
+      {
+        type: "section",
+        fields: [
+          {
+            type: "mrkdwn",
+            text: `*Current Odds:*\n${oddsText}`,
+          },
+          {
+            type: "mrkdwn",
+            text: marketLean ? `*Market Lean:*\n${marketLean}` : " ",
+          },
+        ],
+      },
+    ];
 
-Current Odds: ${oddsText}
-${betsText ? `\n💰 *Largest Recent Bets:*\n${betsText}` : ""}
-${marketLean ? `\n📈 Market Lean: ${marketLean}` : ""}
-${momentum ? `   ${momentum}` : ""}
-${recommendation ? `\n💡 *Recommendation:* ${recommendation}` : ""}
+    // Add bets section if available
+    if (betsText) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `💰 *Largest Recent Bets:*\n${betsText}`,
+        },
+      });
+    }
 
-🔗 <https://polymarket.com/event/${market.slug}|View Market>`;
+    // Add recommendation section
+    if (recommendation) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `💡 *Recommendation:* ${recommendation}${momentum ? `\n${momentum}` : ""}`,
+        },
+      });
+    }
+
+    // Add action button
+    blocks.push(
+      { type: "divider" },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "View Market",
+              emoji: true,
+            },
+            url: `https://polymarket.com/event/${market.slug}`,
+            action_id: `view_market_${market.id}`,
+          },
+        ],
+      }
+    );
 
     return this.client.chat.postMessage({
       channel: targetChannel,
-      text: message,
+      text: fallbackText,
+      blocks,
       unfurl_links: false,
     });
   }
@@ -202,27 +267,95 @@ ${recommendation ? `\n💡 *Recommendation:* ${recommendation}` : ""}
       whaleSignals += "  • Close to event ✓\n";
     }
 
-    const message = `🚨 *WHALE ALERT* — Large Bet Detected
+    const fallbackText = `🚨 WHALE ALERT - $${tradeValue.toFixed(0)} on ${market.question}`;
+    const formattedValue = tradeValue.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-📊 *Market:* ${market.question}
-⏰ *Closes in:* ${timeUntilClose}
+    // Block Kit formatted message
+    const blocks: (KnownBlock | Block)[] = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "🚨 WHALE ALERT — Large Bet Detected",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*${market.question}*\n⏰ Closes in: ${timeUntilClose}`,
+        },
+      },
+      {
+        type: "section",
+        fields: [
+          {
+            type: "mrkdwn",
+            text: `*Amount:*\n$${formattedValue}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Outcome:*\n${trade.outcome ?? "Unknown"}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Account:*\n${traderInfo?.address ?? trade.traderAddress ?? "Unknown"}${traderInfo?.isNew ? " 🆕" : ""}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Placed:*\n${this.formatTimeAgo(trade.timestamp)}`,
+          },
+        ],
+      },
+    ];
 
-💰 *LARGE BET DETECTED:*
-  • $${tradeValue.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} on ${trade.outcome ?? "?"}
-  • Account: ${traderInfo?.address ?? trade.traderAddress ?? "Unknown"}${traderInfo?.isNew ? " (NEW)" : ""}
-  • Placed: ${this.formatTimeAgo(trade.timestamp)}
-${whaleSignals ? `\n⚠️ *Whale Signal*\n${whaleSignals}` : ""}
-📈 *Market Lean:* ${analysis.marketLean}
-   ${analysis.momentum}
+    // Add whale signals if present
+    if (whaleSignals) {
+      blocks.push({
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `⚠️ *Whale Signals:* ${whaleSignals.replace(/\n/g, " ")}`,
+          },
+        ],
+      });
+    }
 
-💡 *Recommendation:* ${this.formatRecommendation(analysis.recommendation)}
-   Confidence: ${analysis.confidence}
+    // Add analysis section
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `📈 *Market Lean:* ${analysis.marketLean}\n${analysis.momentum}\n\n💡 *Recommendation:* ${this.formatRecommendation(analysis.recommendation)}\n_Confidence: ${analysis.confidence}_`,
+      },
+    });
 
-🔗 <https://polymarket.com/event/${market.slug}|View Market>`;
+    // Add action button
+    blocks.push(
+      { type: "divider" },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "View Market",
+              emoji: true,
+            },
+            url: `https://polymarket.com/event/${market.slug}`,
+            action_id: `view_whale_market_${market.id}`,
+          },
+        ],
+      }
+    );
 
     return this.client.chat.postMessage({
       channel: targetChannel,
-      text: message,
+      text: fallbackText,
+      blocks,
       unfurl_links: false,
     });
   }
@@ -251,17 +384,68 @@ ${whaleSignals ? `\n⚠️ *Whale Signal*\n${whaleSignals}` : ""}
           .join("\n");
     }
 
-    const message = `📊 *Daily Summary — ${dateStr}*
+    const fallbackText = `📊 Daily Summary — ${dateStr}`;
 
-*Markets Tracked:* ${summary.marketsTracked}
-*Active Markets:* ${summary.marketsActive}
-*Closed Markets:* ${summary.marketsClosed}
-*Whale Alerts Sent:* ${summary.whaleAlertsCount}
-*Total Large Trades:* ${summary.totalLargeTrades}${topMarketsText}`;
+    // Block Kit formatted message
+    const blocks: (KnownBlock | Block)[] = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: `📊 Daily Summary — ${dateStr}`,
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        fields: [
+          {
+            type: "mrkdwn",
+            text: `*Markets Tracked:*\n${summary.marketsTracked}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Active Markets:*\n${summary.marketsActive}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Closed Markets:*\n${summary.marketsClosed}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Whale Alerts:*\n${summary.whaleAlertsCount}`,
+          },
+        ],
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Total Large Trades:* ${summary.totalLargeTrades}`,
+        },
+      },
+    ];
+
+    // Add top markets if available
+    if (summary.topMarkets && summary.topMarkets.length > 0) {
+      const topMarketsFormatted = summary.topMarkets
+        .slice(0, 5)
+        .map((m, i) => `${i + 1}. ${m.question} ($${(m.volume / 1000).toFixed(0)}k)`)
+        .join("\n");
+      
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Top Markets by Volume:*\n${topMarketsFormatted}`,
+        },
+      });
+    }
 
     return this.client.chat.postMessage({
       channel: targetChannel,
-      text: message,
+      text: fallbackText,
+      blocks,
       unfurl_links: false,
     });
   }
@@ -291,17 +475,55 @@ ${whaleSignals ? `\n⚠️ *Whale Signal*\n${whaleSignals}` : ""}
 
     const uptimeHours = (report.uptime / (60 * 60 * 1000)).toFixed(1);
 
-    const message = `${statusEmoji} *System Health Report*
+    const fallbackText = `${statusEmoji} System Health Report - ${report.status.toUpperCase()}`;
 
-*Status:* ${report.status.toUpperCase()}
-*Uptime:* ${uptimeHours} hours
+    // Block Kit formatted message
+    const blocks: (KnownBlock | Block)[] = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: `${statusEmoji} System Health Report`,
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        fields: [
+          {
+            type: "mrkdwn",
+            text: `*Status:*\n${report.status.toUpperCase()}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Uptime:*\n${uptimeHours} hours`,
+          },
+        ],
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Services:*\n${serviceStatus}`,
+        },
+      },
+    ];
 
-*Services:*
-${serviceStatus}${report.lastError ? `\n\n*Last Error:*\n\`${report.lastError}\`` : ""}`;
+    // Add error section if present
+    if (report.lastError) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Last Error:*\n\`\`\`${report.lastError}\`\`\``,
+        },
+      });
+    }
 
     return this.client.chat.postMessage({
       channel: targetChannel,
-      text: message,
+      text: fallbackText,
+      blocks,
       unfurl_links: false,
     });
   }
