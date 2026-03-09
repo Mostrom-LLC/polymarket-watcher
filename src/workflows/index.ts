@@ -55,34 +55,19 @@ function hydrateTrade(data: unknown): NormalizedTrade {
 }
 
 // =============================================================================
-// Event Types
-// =============================================================================
-
-type Events = {
-  "polymarket/scan-markets": Record<string, never>;
-  "polymarket/monitor-trades": { marketId: string };
-  "polymarket/check-closing": { marketId: string };
-  "polymarket/whale-alert": {
-    marketId: string;
-    tradeIds: string[];
-  };
-  "polymarket/daily-summary": Record<string, never>;
-};
-
-// =============================================================================
-// Market Scanner Workflow
+// Market Discovery Workflow (every 15 minutes)
 // =============================================================================
 
 /**
- * Scan for markets closing today and filter by topics
- * Runs every 30 minutes
+ * Discover markets closing today and filter by topics
+ * Runs every 15 minutes per AC
  */
-const scanMarkets = inngest.createFunction(
+const discoverMarkets = inngest.createFunction(
   {
-    id: "scan-markets",
-    name: "Market Scanner",
+    id: "discover-markets",
+    name: "Market Discovery",
   },
-  { cron: "*/30 * * * *" },
+  { cron: "*/15 * * * *" }, // Every 15 minutes
   async ({ step }) => {
     const config = getConfig();
     
@@ -96,7 +81,7 @@ const scanMarkets = inngest.createFunction(
     // Step 1: Fetch markets closing in next 24 hours
     const marketsRaw = await step.run("fetch-closing-markets", async () => {
       const closingSoon = await gammaApi.getMarketsClosingSoon(24);
-      console.log(`[scan-markets] Found ${closingSoon.length} markets closing in 24h`);
+      console.log(`[discover-markets] Found ${closingSoon.length} markets closing in 24h`);
       return closingSoon.map((m) => gammaApi.normalizeMarket(m));
     });
 
@@ -104,6 +89,7 @@ const scanMarkets = inngest.createFunction(
     const markets = (marketsRaw as unknown[]).map(hydrateMarket);
 
     if (markets.length === 0) {
+      console.log("[discover-markets] No markets found closing in 24h");
       return { scanned: 0, matched: 0 };
     }
 
@@ -115,13 +101,14 @@ const scanMarkets = inngest.createFunction(
       await step.run("cache-all-markets", async () => {
         await cache.setTodayMarkets(markets);
       });
+      console.log(`[discover-markets] Cached ${markets.length} markets (no topic filter)`);
       return { scanned: markets.length, matched: markets.length };
     }
 
     // Step 3: Classify markets by topics
     const matchedMarketsRaw = await step.run("classify-markets", async () => {
       const filtered = await classifier.filterByTopics(markets, topics, 0.6);
-      console.log(`[scan-markets] ${filtered.length}/${markets.length} markets match topics`);
+      console.log(`[discover-markets] ${filtered.length}/${markets.length} markets match topics`);
       return filtered;
     });
 
@@ -132,132 +119,28 @@ const scanMarkets = inngest.createFunction(
       await cache.setTodayMarkets(matchedMarkets);
     });
 
-    // Step 5: Schedule monitoring for each market
-    await step.run("schedule-monitoring", async () => {
-      for (const market of matchedMarkets) {
-        await inngest.send({
-          name: "polymarket/monitor-trades",
-          data: { marketId: market.id },
-        });
-      }
-    });
-
+    console.log(`[discover-markets] Discovery complete: ${matchedMarkets.length} markets cached`);
     return { scanned: markets.length, matched: matchedMarkets.length };
   }
 );
 
 // =============================================================================
-// Trade Monitor Workflow
+// Trade Monitor Workflow (every 5 minutes)
 // =============================================================================
 
 /**
- * Monitor trades for a specific market
- * Detects whale activity and triggers alerts
+ * Monitor trades for all cached markets
+ * Runs every 5 minutes per AC
  */
 const monitorTrades = inngest.createFunction(
   {
     id: "monitor-trades",
     name: "Trade Monitor",
-    throttle: {
-      key: "event.data.marketId",
-      limit: 1,
-      period: "5m",
-    },
   },
-  { event: "polymarket/monitor-trades" },
-  async ({ event, step }) => {
-    const { marketId } = event.data;
+  { cron: "*/5 * * * *" }, // Every 5 minutes
+  async ({ step }) => {
     const config = getConfig();
-
     const clobApi = new ClobApiClient();
-    const cache = new MarketCache(config.env.REDIS_URL);
-
-    // Step 1: Get market data from cache
-    const marketRaw = await step.run("get-market", async () => {
-      return cache.getMarket(marketId);
-    });
-
-    if (!marketRaw) {
-      console.log(`[monitor-trades] Market ${marketId} not found in cache`);
-      return { monitored: false, reason: "market_not_found" };
-    }
-
-    const market = hydrateMarket(marketRaw);
-
-    // Step 2: Fetch large trades for each token
-    const largeTradesRaw = await step.run("fetch-large-trades", async () => {
-      const allTrades: NormalizedTrade[] = [];
-      for (const tokenId of market.tokenIds) {
-        const trades = await clobApi.getLargeTrades(tokenId, 50000, { limit: 20 });
-        const normalized = trades.map((t) => clobApi.normalizeTrade(t, marketId));
-        allTrades.push(...normalized);
-      }
-      return allTrades;
-    });
-
-    const largeTrades = (largeTradesRaw as unknown[]).map(hydrateTrade);
-
-    if (largeTrades.length === 0) {
-      return { monitored: true, tradesFound: 0 };
-    }
-
-    // Step 3: Check for new trades (not already cached)
-    const newTradesRaw = await step.run("filter-new-trades", async () => {
-      const cachedTrades = await cache.getLargeTrades(marketId);
-      const cachedIds = new Set(cachedTrades.map((t) => t.id));
-      return largeTrades.filter((t) => !cachedIds.has(t.id));
-    });
-
-    const newTrades = (newTradesRaw as unknown[]).map(hydrateTrade);
-
-    if (newTrades.length === 0) {
-      return { monitored: true, tradesFound: largeTrades.length, newTrades: 0 };
-    }
-
-    // Step 4: Cache new trades
-    await step.run("cache-trades", async () => {
-      for (const trade of newTrades) {
-        await cache.addLargeTrade(marketId, trade);
-      }
-    });
-
-    // Step 5: Trigger whale alert
-    await step.run("trigger-whale-alert", async () => {
-      await inngest.send({
-        name: "polymarket/whale-alert",
-        data: {
-          marketId,
-          tradeIds: newTrades.map((t) => t.id),
-        },
-      });
-    });
-
-    return { monitored: true, tradesFound: largeTrades.length, newTrades: newTrades.length };
-  }
-);
-
-// =============================================================================
-// Whale Alert Workflow
-// =============================================================================
-
-/**
- * Analyze whale activity and send alert
- */
-const whaleAlert = inngest.createFunction(
-  {
-    id: "whale-alert",
-    name: "Whale Alert",
-    throttle: {
-      key: "event.data.marketId",
-      limit: 1,
-      period: "15m", // Max 1 alert per market per 15 min
-    },
-  },
-  { event: "polymarket/whale-alert" },
-  async ({ event, step }) => {
-    const { marketId } = event.data;
-    const config = getConfig();
-
     const cache = new MarketCache(config.env.REDIS_URL);
     const analyzer = new WhaleAnalyzer(config.env.ANTHROPIC_API_KEY);
     const notifier = new SlackNotifier(
@@ -265,72 +148,118 @@ const whaleAlert = inngest.createFunction(
       config.env.SLACK_DEFAULT_CHANNEL
     );
 
-    // Step 1: Get market and trades from cache
-    const marketRaw = await step.run("get-market-data", async () => {
-      return cache.getMarket(marketId);
+    // Step 1: Get all tracked markets from cache
+    const marketsRaw = await step.run("get-tracked-markets", async () => {
+      return cache.getTodayMarkets();
     });
 
-    if (!marketRaw) {
-      return { alerted: false, reason: "market_not_found" };
+    const markets = (marketsRaw as unknown[]).map(hydrateMarket);
+
+    if (markets.length === 0) {
+      console.log("[monitor-trades] No markets being tracked");
+      return { monitored: 0, whalesDetected: 0 };
     }
 
-    const market = hydrateMarket(marketRaw);
+    let whalesDetected = 0;
 
-    const tradesRaw = await step.run("get-trades", async () => {
-      return cache.getLargeTrades(marketId, 10);
-    });
+    // Step 2: Check each market for whale activity
+    for (const market of markets) {
+      // Fetch large trades ($50k+) for each token
+      const largeTradesRaw = await step.run(`fetch-trades-${market.id}`, async () => {
+        const allTrades: NormalizedTrade[] = [];
+        for (const tokenId of market.tokenIds) {
+          const trades = await clobApi.getLargeTrades(tokenId, 50000, { limit: 20 });
+          const normalized = trades.map((t) => clobApi.normalizeTrade(t, market.id));
+          allTrades.push(...normalized);
+        }
+        return allTrades;
+      });
 
-    const trades = (tradesRaw as unknown[]).map(hydrateTrade);
+      const largeTrades = (largeTradesRaw as unknown[]).map(hydrateTrade);
 
-    if (trades.length === 0) {
-      return { alerted: false, reason: "no_trades" };
+      if (largeTrades.length === 0) {
+        continue;
+      }
+
+      // Check for new trades (not already cached)
+      const newTradesRaw = await step.run(`filter-new-${market.id}`, async () => {
+        const cachedTrades = await cache.getLargeTrades(market.id);
+        const cachedIds = new Set(cachedTrades.map((t) => t.id));
+        return largeTrades.filter((t) => !cachedIds.has(t.id));
+      });
+
+      const newTrades = (newTradesRaw as unknown[]).map(hydrateTrade);
+
+      if (newTrades.length === 0) {
+        continue;
+      }
+
+      // Cache new trades
+      await step.run(`cache-trades-${market.id}`, async () => {
+        for (const trade of newTrades) {
+          await cache.addLargeTrade(market.id, trade);
+        }
+      });
+
+      // Run AI analysis on whale activity
+      const analysis = await step.run(`analyze-whales-${market.id}`, async () => {
+        return analyzer.analyzeWhaleActivity(
+          market.question,
+          newTrades.map((t) => ({
+            side: t.side,
+            size: t.size,
+            price: t.price,
+            outcome: t.outcome,
+            timestamp: t.timestamp,
+          }))
+        );
+      });
+
+      // Send whale alert (throttled per market)
+      const wasRecentlyAlerted = await step.run(`check-whale-alert-${market.id}`, async () => {
+        // Use a separate key for whale alerts (distinct from closing alerts)
+        const key = `whale-alerted:${market.id}`;
+        const exists = await cache.wasAlerted(market.id);
+        return exists;
+      });
+
+      if (!wasRecentlyAlerted && analysis.confidence > 0.5) {
+        await step.run(`send-whale-alert-${market.id}`, async () => {
+          const alert: MarketAlert = {
+            type: "whale_detected",
+            market,
+            title: "Whale Activity Detected",
+            message: analysis.summary,
+            severity: analysis.confidence > 0.7 ? "high" : "medium",
+            aiSummary: analysis.summary,
+            trades: newTrades,
+            whaleAnalysis: { ...analysis, marketId: market.id },
+          };
+          await notifier.sendAlert(alert);
+          // Mark as alerted for 15 minutes
+          await cache.markAlerted(market.id, 900);
+        });
+        whalesDetected++;
+      }
     }
 
-    // Step 2: Run AI analysis
-    const analysis = await step.run("analyze-whales", async () => {
-      return analyzer.analyzeWhaleActivity(
-        market.question,
-        trades.map((t) => ({
-          side: t.side,
-          size: t.size,
-          price: t.price,
-          outcome: t.outcome,
-          timestamp: t.timestamp,
-        }))
-      );
-    });
-
-    // Step 3: Send Slack alert
-    await step.run("send-alert", async () => {
-      const alert: MarketAlert = {
-        type: "whale_detected",
-        market,
-        title: "Whale Activity Detected",
-        message: analysis.summary,
-        severity: analysis.confidence > 0.7 ? "high" : "medium",
-        aiSummary: analysis.summary,
-        trades,
-        whaleAnalysis: { ...analysis, marketId },
-      };
-
-      await notifier.sendAlert(alert);
-    });
-
-    return { alerted: true, tradesAnalyzed: trades.length };
+    console.log(`[monitor-trades] Monitored ${markets.length} markets, detected ${whalesDetected} whale events`);
+    return { monitored: markets.length, whalesDetected };
   }
 );
 
 // =============================================================================
-// Market Closing Alert Workflow
+// Close Alert Workflow (every 5 minutes)
 // =============================================================================
 
 /**
  * Check for markets closing soon and send alerts
+ * Alerts at T-30 minutes
  */
-const checkClosing = inngest.createFunction(
+const closeAlert = inngest.createFunction(
   {
-    id: "check-closing",
-    name: "Closing Alert Checker",
+    id: "close-alert",
+    name: "Close Alert",
   },
   { cron: "*/5 * * * *" }, // Every 5 minutes
   async ({ step }) => {
@@ -355,14 +284,15 @@ const checkClosing = inngest.createFunction(
 
       const minutesUntilClose = (market.endDate.getTime() - Date.now()) / (1000 * 60);
 
-      // Alert at 30 minutes
+      // Alert at T-30 minutes (between 25-35 min window to catch it)
       if (minutesUntilClose > 25 && minutesUntilClose <= 35) {
-        const wasAlerted = await step.run(`check-alerted-${market.id}`, async () => {
+        const closeAlertKey = `close-alerted:${market.id}`;
+        const wasAlerted = await step.run(`check-close-alert-${market.id}`, async () => {
           return cache.wasAlerted(market.id);
         });
 
         if (!wasAlerted) {
-          await step.run(`send-closing-alert-${market.id}`, async () => {
+          await step.run(`send-close-alert-${market.id}`, async () => {
             const alert: MarketAlert = {
               type: "market_closing",
               market,
@@ -371,18 +301,93 @@ const checkClosing = inngest.createFunction(
               severity: "medium",
             };
             await notifier.sendAlert(alert);
-            await cache.markAlerted(market.id, 3600); // 1 hour TTL
+            // Mark as alerted for 1 hour (won't re-alert)
+            await cache.markAlerted(market.id, 3600);
           });
           alertsSent.push(market.id);
         }
       }
     }
 
+    console.log(`[close-alert] Checked ${markets.length} markets, sent ${alertsSent.length} alerts`);
     return { checked: markets.length, alertsSent: alertsSent.length };
+  }
+);
+
+// =============================================================================
+// Daily Summary Workflow (9 PM daily)
+// =============================================================================
+
+/**
+ * Generate daily summary of activity
+ * Runs at 9 PM daily per AC
+ */
+const dailySummary = inngest.createFunction(
+  {
+    id: "daily-summary",
+    name: "Daily Summary",
+  },
+  { cron: "0 21 * * *" }, // 9 PM daily
+  async ({ step }) => {
+    const config = getConfig();
+    const cache = new MarketCache(config.env.REDIS_URL);
+    const notifier = new SlackNotifier(
+      config.env.SLACK_BOT_TOKEN,
+      config.env.SLACK_DEFAULT_CHANNEL
+    );
+
+    // Get today's tracked markets
+    const marketsRaw = await step.run("get-today-markets", async () => {
+      return cache.getTodayMarkets();
+    });
+
+    const markets = (marketsRaw as unknown[]).map(hydrateMarket);
+
+    // Gather stats
+    const stats = await step.run("gather-stats", async () => {
+      let totalTrades = 0;
+      let marketsWithWhales = 0;
+
+      for (const market of markets) {
+        const trades = await cache.getLargeTrades(market.id);
+        if (trades.length > 0) {
+          totalTrades += trades.length;
+          marketsWithWhales++;
+        }
+      }
+
+      return {
+        marketsTracked: markets.length,
+        marketsWithWhaleActivity: marketsWithWhales,
+        totalLargeTrades: totalTrades,
+      };
+    });
+
+    // Generate summary message
+    const closedMarkets = markets.filter((m) => m.endDate && m.endDate < new Date());
+    const activeMarkets = markets.filter((m) => m.endDate && m.endDate >= new Date());
+
+    // Send daily summary to Slack
+    await step.run("send-summary", async () => {
+      const summaryText = `📊 *Daily Summary*
+
+*Markets Tracked Today:* ${stats.marketsTracked}
+*Active Markets:* ${activeMarkets.length}
+*Closed Markets:* ${closedMarkets.length}
+*Markets with Whale Activity:* ${stats.marketsWithWhaleActivity}
+*Total Large Trades (>$50k):* ${stats.totalLargeTrades}
+
+${activeMarkets.length > 0 ? `\n*Still Active:*\n${activeMarkets.slice(0, 5).map((m) => `• ${m.question}`).join("\n")}${activeMarkets.length > 5 ? `\n...and ${activeMarkets.length - 5} more` : ""}` : ""}`;
+
+      await notifier.sendMessage(summaryText);
+    });
+
+    console.log(`[daily-summary] Summary sent: ${stats.marketsTracked} markets tracked`);
+    return stats;
   }
 );
 
 /**
  * Export all workflow functions for Inngest registration
  */
-export const functions = [scanMarkets, monitorTrades, whaleAlert, checkClosing];
+export const functions = [discoverMarkets, monitorTrades, closeAlert, dailySummary];
