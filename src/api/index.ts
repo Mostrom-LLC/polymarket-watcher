@@ -1,46 +1,30 @@
 /**
- * Polymarket API Client
+ * Polymarket API Clients
  * 
- * This module provides typed clients for interacting with the Polymarket API.
- * Implementation will be added in subsequent tickets.
+ * This module provides typed clients for interacting with the Polymarket APIs.
  */
 
-export interface Market {
-  id: string;
-  slug: string;
-  question: string;
-  outcomes: string[];
-  outcomePrices: number[];
-  volume: number;
-  liquidity: number;
-  endDate: string;
-  active: boolean;
-}
+// Export clients
+export { GammaApiClient } from "./gamma-client.js";
+export { ClobApiClient } from "./clob-client.js";
 
-export interface MarketPrice {
-  marketId: string;
-  prices: Record<string, number>;
-  timestamp: Date;
-}
+// Export types
+export type {
+  GammaMarket,
+  GammaEvent,
+  GammaOutcome,
+  ClobTrade,
+  ClobOpenInterest,
+  NormalizedMarket,
+  NormalizedTrade,
+  ApiClientOptions,
+} from "./types.js";
 
-/**
- * Placeholder for Polymarket API client
- * TODO: Implement in MOS-85 or related ticket
- */
-export class PolymarketClient {
-  private _baseUrl: string;
-
-  constructor(baseUrl: string = "https://gamma-api.polymarket.com") {
-    this._baseUrl = baseUrl;
-  }
-
-  async getMarket(_slug: string): Promise<Market | null> {
-    // TODO: Implement API call
-    throw new Error("Not implemented");
-  }
-
-  async getMarketPrices(_marketId: string): Promise<MarketPrice | null> {
-    // TODO: Implement API call
-    throw new Error("Not implemented");
-  }
-}
+// Export schemas for external validation
+export {
+  gammaMarketSchema,
+  gammaEventSchema,
+  gammaOutcomeSchema,
+  clobTradeSchema,
+  clobOpenInterestSchema,
+} from "./types.js";
