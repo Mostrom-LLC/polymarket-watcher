@@ -3,7 +3,7 @@ import { inngest, functions } from "./workflows/index.js";
 import { getConfig } from "./config/loader.js";
 import { MarketCache } from "./cache/redis.js";
 import { SlackNotifier } from "./notifications/slack.js";
-import express from "express";
+import express, { type Request, type Response } from "express";
 
 /**
  * Polymarket Watcher - Entry Point
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   );
   
   // Health check endpoint
-  app.get("/health", async (_req, res) => {
+  app.get("/health", async (_req: Request, res: Response) => {
     const [redisHealthy, slackHealthy] = await Promise.all([
       cache.healthCheck(),
       slack.healthCheck(),
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   });
   
   // Ready check (for k8s/ECS)
-  app.get("/ready", async (_req, res) => {
+  app.get("/ready", async (_req: Request, res: Response) => {
     const redisHealthy = await cache.healthCheck();
     if (redisHealthy) {
       res.json({ ready: true });
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   });
   
   // Cache stats endpoint
-  app.get("/stats", async (_req, res) => {
+  app.get("/stats", async (_req: Request, res: Response) => {
     try {
       const stats = await cache.getStats();
       res.json({
