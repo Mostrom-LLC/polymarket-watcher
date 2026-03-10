@@ -189,20 +189,17 @@ export class GammaApiClient {
 
   /**
    * Normalize a Gamma market to unified format
+   * 
+   * The schema already normalizes outcomes to string[] and outcomePrices to number[],
+   * so we just need to handle the optional fields.
    */
   normalizeMarket(market: GammaMarket): NormalizedMarket {
-    // outcomes can be strings (from JSON parse) or objects with title property
-    const outcomes = market.outcomes?.map((o) => 
-      typeof o === "string" ? o : (o as { title?: string }).title ?? ""
-    ) ?? [];
-    const outcomePrices = market.outcomePrices ?? [];
-
     return {
       id: market.id,
       question: market.question,
       slug: market.slug,
-      outcomes,
-      outcomePrices,
+      outcomes: market.outcomes ?? [],
+      outcomePrices: market.outcomePrices ?? [],
       volume: market.volume,
       liquidity: market.liquidity,
       endDate: market.endDate ? new Date(market.endDate) : null,

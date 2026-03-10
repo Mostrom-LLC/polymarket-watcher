@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GammaApiClient } from "./gamma-client.js";
+import { gammaMarketSchema } from "./types.js";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -177,24 +178,25 @@ describe("GammaApiClient", () => {
   });
 
   describe("normalizeMarket", () => {
-    it("should normalize market to unified format", () => {
-      const gammaMarket = {
+    it("should normalize market with JSON string fields (actual API format)", () => {
+      // This matches the actual Gamma API response format
+      const rawMarket = {
         id: "market-1",
         question: "Will X happen?",
         conditionId: "cond-1",
         slug: "will-x-happen",
-        liquidity: 100000,
-        volume: 500000,
+        liquidity: "100000",
+        volume: "500000",
         active: true,
         closed: false,
         endDate: "2024-12-31T23:59:59Z",
-        clobTokenIds: ["token-yes", "token-no"],
-        outcomes: [
-          { id: "o1", title: "Yes", price: 0.65 },
-          { id: "o2", title: "No", price: 0.35 },
-        ],
+        clobTokenIds: '["token-yes","token-no"]',
+        outcomes: '["Yes","No"]',
+        outcomePrices: '["0.65","0.35"]',
       };
 
+      // Parse through schema first (as the client does)
+      const gammaMarket = gammaMarketSchema.parse(rawMarket);
       const normalized = client.normalizeMarket(gammaMarket);
 
       expect(normalized.id).toBe("market-1");
@@ -202,6 +204,35 @@ describe("GammaApiClient", () => {
       expect(normalized.outcomePrices).toEqual([0.65, 0.35]);
       expect(normalized.tokenIds).toEqual(["token-yes", "token-no"]);
       expect(normalized.endDate).toBeInstanceOf(Date);
+    });
+
+    it("should normalize market with array of outcome objects (legacy format)", () => {
+      // Some API responses may include full outcome objects
+      const rawMarket = {
+        id: "market-2",
+        question: "Will Y happen?",
+        conditionId: "cond-2",
+        slug: "will-y-happen",
+        liquidity: "200000",
+        volume: "600000",
+        active: true,
+        closed: false,
+        endDate: "2024-12-31T23:59:59Z",
+        clobTokenIds: ["token-a", "token-b"],
+        outcomes: [
+          { id: "o1", title: "Yes", price: "0.70" },
+          { id: "o2", title: "No", price: "0.30" },
+        ],
+        outcomePrices: ["0.70", "0.30"],
+      };
+
+      const gammaMarket = gammaMarketSchema.parse(rawMarket);
+      const normalized = client.normalizeMarket(gammaMarket);
+
+      expect(normalized.id).toBe("market-2");
+      expect(normalized.outcomes).toEqual(["Yes", "No"]);
+      expect(normalized.outcomePrices).toEqual([0.70, 0.30]);
+      expect(normalized.tokenIds).toEqual(["token-a", "token-b"]);
     });
   });
 });
