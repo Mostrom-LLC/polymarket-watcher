@@ -4,7 +4,7 @@ import { ClobApiClient } from "../api/clob-client.js";
 import { MarketCache } from "../cache/redis.js";
 import { TopicClassifier } from "../agents/topic-classifier.js";
 import { WhaleAnalyzer } from "../agents/whale-analyzer.js";
-import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary } from "../notifications/slack.js";
+import { SlackNotifier, type MarketAlert, type WhaleAlert, type WhaleExitAlert, type DailySummary } from "../notifications/slack.js";
 import { getConfig } from "../config/loader.js";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
@@ -250,22 +250,47 @@ const monitorTrades = inngest.createFunction(
       });
 
       if (!wasRecentlyAlerted && analysis.hasWhaleActivity) {
-        await step.run(`send-whale-alert-${market.id}`, async () => {
-          // Get the largest trade for the alert
-          const largestTrade = analysis.largestBets[0];
-          if (largestTrade) {
-            const whaleAlert: WhaleAlert = {
-              market,
-              trade: largestTrade,
-              analysis,
-              traderInfo: largestTrade.traderAddress ? {
-                address: largestTrade.traderAddress,
-                isNew: false, // Would need external data to determine
-              } : undefined,
-            };
-            await notifier.sendWhaleAlert(whaleAlert);
-          }
-          // Mark as alerted for 15 minutes
+        // Separate BUY and SELL trades
+        const buyTrades = newTrades.filter((t) => t.side === "BUY");
+        const sellTrades = newTrades.filter((t) => t.side === "SELL");
+
+        // Send whale BUY alert if significant buy activity
+        if (buyTrades.length > 0) {
+          await step.run(`send-whale-alert-${market.id}`, async () => {
+            // Get the largest BUY trade for the alert
+            const largestBuy = buyTrades.sort((a, b) => (b.size * b.price) - (a.size * a.price))[0];
+            if (largestBuy && (largestBuy.size * largestBuy.price) >= 50000) {
+              const whaleAlert: WhaleAlert = {
+                market,
+                trade: largestBuy,
+                analysis,
+                traderInfo: largestBuy.traderAddress ? {
+                  address: largestBuy.traderAddress,
+                  isNew: false,
+                } : undefined,
+              };
+              await notifier.sendWhaleAlert(whaleAlert);
+            }
+          });
+        }
+
+        // Send whale EXIT alert if significant sell activity (MOS-94 requirement)
+        if (sellTrades.length > 0) {
+          await step.run(`send-whale-exit-${market.id}`, async () => {
+            // Get the largest SELL trade for the exit alert
+            const largestSell = sellTrades.sort((a, b) => (b.size * b.price) - (a.size * a.price))[0];
+            if (largestSell && (largestSell.size * largestSell.price) >= 50000) {
+              const exitAlert: WhaleExitAlert = {
+                market,
+                trade: largestSell,
+              };
+              await notifier.sendWhaleExitAlert(exitAlert);
+            }
+          });
+        }
+
+        // Mark as alerted for 15 minutes
+        await step.run(`mark-alerted-${market.id}`, async () => {
           await cache.markAlerted(market.id, 900);
         });
         whalesDetected++;
@@ -282,12 +307,13 @@ const monitorTrades = inngest.createFunction(
 // =============================================================================
 // 
 // Standalone close alerts have been removed. All alerts now require whale
-// activity detection ($10k+ bet) on markets closing within 24 hours.
+// activity detection ($50k+ bet) on markets closing within 24 hours.
 // Whale alerts are sent by monitorTrades workflow which combines both signals.
 //
 // See MOS-94 for details: alerts should only fire when BOTH conditions are met:
 // 1. Market is closing within 24 hours
-// 2. Whale bet detected (single trade >= $10,000 USD)
+// 2. Whale bet detected (single trade >= $50,000 USD)
+// 3. Also tracks whale exits (SELL orders >= $50,000)
 
 // =============================================================================
 // Daily Summary Workflow (9 PM daily)
