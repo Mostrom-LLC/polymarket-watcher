@@ -76,8 +76,8 @@ export const envConfigSchema = z.object({
   INNGEST_EVENT_KEY: z.string().optional(),
   INNGEST_SIGNING_KEY: z.string().optional(),
   
-  // Anthropic
-  ANTHROPIC_API_KEY: z.string().min(1),
+  // Gemini (Google AI)
+  GEMINI_API_KEY: z.string().min(1),
   
   // Slack
   SLACK_BOT_TOKEN: z.string().min(1),
