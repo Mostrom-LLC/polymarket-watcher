@@ -1,0 +1,776 @@
+{
+ "Description": "Polymarket Watcher - Autonomous market monitoring service",
+ "Resources": {
+  "prodpolymarketwatchersecret027BB9BD": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Description": "Environment variables for polymarket-watcher (prod)",
+    "Name": "polymarket-watcher",
+    "SecretString": "{\"GEMINI_API_KEY\":\"\",\"SLACK_BOT_TOKEN\":\"\",\"SLACK_APP_TOKEN\":\"\",\"SLACK_CHANNEL_ID\":\"\",\"REDIS_URL\":\"\",\"INNGEST_EVENT_KEY\":\"\",\"INNGEST_SIGNING_KEY\":\"\"}"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-secret/Resource"
+   }
+  },
+  "prodpolymarketwatchercluster1B1ED10A": {
+   "Type": "AWS::ECS::Cluster",
+   "Properties": {
+    "ClusterName": "polymarket",
+    "ClusterSettings": [
+     {
+      "Name": "containerInsights",
+      "Value": "enabled"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-cluster/Resource"
+   }
+  },
+  "prodpolymarketwatcherloggroup22C7F41A": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/ecs/polymarket-watcher/prod",
+    "RetentionInDays": 14
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-log-group/Resource"
+   }
+  },
+  "prodpolymarketwatcherecstaskrole77768BBF": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":iam::366394957699:root"
+          ]
+         ]
+        }
+       }
+      },
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      },
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+       ]
+      ]
+     }
+    ],
+    "RoleName": "polymarket-watcher-prod-ecs-task-role"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-ecs-task-role/Resource"
+   }
+  },
+  "prodpolymarketwatcherecstaskroleDefaultPolicy12FB7146": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "prodpolymarketwatchersecret027BB9BD"
+       }
+      },
+      {
+       "Action": [
+        "logs:*",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "ecr:BatchCheckLayerAvailability",
+        "ecs:UpdateService",
+        "ecs:DescribeServices",
+        "ecs:DescribeTaskDefinition",
+        "ecs:RegisterTaskDefinition",
+        "iam:PassRole"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ecr:us-east-1:366394957699:repository/cdk-hnb659fds-container-assets-366394957699-us-east-1"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "prodpolymarketwatcherloggroup22C7F41A",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "prodpolymarketwatcherecstaskroleDefaultPolicy12FB7146",
+    "Roles": [
+     {
+      "Ref": "prodpolymarketwatcherecstaskrole77768BBF"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-ecs-task-role/DefaultPolicy/Resource"
+   }
+  },
+  "prodpolymarketwatcherfargatesgD56EE872": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "PolymarketWatcherStack/prod-polymarket-watcher-fargate-sg",
+    "GroupName": "polymarket-watcher-prod",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "SecurityGroupIngress": [
+     {
+      "CidrIp": "10.0.0.0/24",
+      "Description": "Allow traffic from within VPC",
+      "FromPort": 80,
+      "IpProtocol": "tcp",
+      "ToPort": 80
+     }
+    ],
+    "VpcId": "vpc-01386cc23ddfbbb97"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-fargate-sg/Resource"
+   }
+  },
+  "prodpolymarketwatcherfargatesgfromPolymarketWatcherStackprodpolymarketwatcheralbSecurityGroup32B2F966808513723D": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "Load balancer to target",
+    "FromPort": 80,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "prodpolymarketwatcherfargatesgD56EE872",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "prodpolymarketwatcheralbSecurityGroupCF65F765",
+      "GroupId"
+     ]
+    },
+    "ToPort": 80
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-fargate-sg/from PolymarketWatcherStackprodpolymarketwatcheralbSecurityGroup32B2F966:80"
+   }
+  },
+  "prodpolymarketwatchertaskdefinition3547D967": {
+   "Type": "AWS::ECS::TaskDefinition",
+   "Properties": {
+    "ContainerDefinitions": [
+     {
+      "Cpu": 512,
+      "Environment": [
+       {
+        "Name": "NODE_ENV",
+        "Value": "prod"
+       },
+       {
+        "Name": "PORT",
+        "Value": "80"
+       },
+       {
+        "Name": "LOG_LEVEL",
+        "Value": "info"
+       },
+       {
+        "Name": "CONFIG_PATH",
+        "Value": "config/user-config.yaml"
+       }
+      ],
+      "Essential": true,
+      "Image": {
+       "Fn::Sub": "366394957699.dkr.ecr.us-east-1.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-366394957699-us-east-1:8bc949fb1088fc1ce555c89a0bd507802e7a4532a553cfa8b7395268ad6f1245"
+      },
+      "LogConfiguration": {
+       "LogDriver": "awslogs",
+       "Options": {
+        "awslogs-group": {
+         "Ref": "prodpolymarketwatcherloggroup22C7F41A"
+        },
+        "awslogs-stream-prefix": "ecs",
+        "awslogs-region": "us-east-1",
+        "awslogs-multiline-pattern": "^(INFO|DEBUG|WARN|ERROR|CRITICAL)"
+       }
+      },
+      "Memory": 1024,
+      "Name": "prod-polymarket-watcher-container",
+      "PortMappings": [
+       {
+        "ContainerPort": 80,
+        "Protocol": "tcp"
+       }
+      ],
+      "Secrets": [
+       {
+        "Name": "GEMINI_API_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":GEMINI_API_KEY::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "SLACK_BOT_TOKEN",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":SLACK_BOT_TOKEN::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "SLACK_APP_TOKEN",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":SLACK_APP_TOKEN::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "SLACK_CHANNEL_ID",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":SLACK_CHANNEL_ID::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "REDIS_URL",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":REDIS_URL::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "INNGEST_EVENT_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":INNGEST_EVENT_KEY::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "INNGEST_SIGNING_KEY",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Ref": "prodpolymarketwatchersecret027BB9BD"
+           },
+           ":INNGEST_SIGNING_KEY::"
+          ]
+         ]
+        }
+       }
+      ]
+     }
+    ],
+    "Cpu": "512",
+    "ExecutionRoleArn": {
+     "Fn::GetAtt": [
+      "prodpolymarketwatcherecstaskrole77768BBF",
+      "Arn"
+     ]
+    },
+    "Family": "polymarket-watcher",
+    "Memory": "1024",
+    "NetworkMode": "awsvpc",
+    "RequiresCompatibilities": [
+     "FARGATE"
+    ],
+    "TaskRoleArn": {
+     "Fn::GetAtt": [
+      "prodpolymarketwatcherecstaskrole77768BBF",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-task-definition/Resource"
+   }
+  },
+  "prodpolymarketwatcherfargateserviceService081C4C1A": {
+   "Type": "AWS::ECS::Service",
+   "Properties": {
+    "Cluster": {
+     "Ref": "prodpolymarketwatchercluster1B1ED10A"
+    },
+    "DeploymentConfiguration": {
+     "Alarms": {
+      "AlarmNames": [],
+      "Enable": false,
+      "Rollback": false
+     },
+     "DeploymentCircuitBreaker": {
+      "Enable": true,
+      "Rollback": true
+     },
+     "MaximumPercent": 200,
+     "MinimumHealthyPercent": 50
+    },
+    "DesiredCount": 0,
+    "EnableECSManagedTags": false,
+    "HealthCheckGracePeriodSeconds": 60,
+    "LaunchType": "FARGATE",
+    "LoadBalancers": [
+     {
+      "ContainerName": "prod-polymarket-watcher-container",
+      "ContainerPort": 80,
+      "TargetGroupArn": {
+       "Ref": "prodpolymarketwatchertargetgroup41A3801A"
+      }
+     }
+    ],
+    "NetworkConfiguration": {
+     "AwsvpcConfiguration": {
+      "AssignPublicIp": "DISABLED",
+      "SecurityGroups": [
+       {
+        "Fn::GetAtt": [
+         "prodpolymarketwatcherfargatesgD56EE872",
+         "GroupId"
+        ]
+       }
+      ],
+      "Subnets": [
+       "subnet-00fae570d52d05a52",
+       "subnet-054ac9334ef69d19f",
+       "subnet-05b564f7d67c2bcfa",
+       "subnet-08c4cd68e4c1c93ae"
+      ]
+     }
+    },
+    "ServiceName": "polymarket-watcher",
+    "TaskDefinition": {
+     "Ref": "prodpolymarketwatchertaskdefinition3547D967"
+    }
+   },
+   "DependsOn": [
+    "prodpolymarketwatcheralbprodpolymarketwatcherlistener8118F4F9",
+    "prodpolymarketwatcherecstaskroleDefaultPolicy12FB7146",
+    "prodpolymarketwatcherecstaskrole77768BBF",
+    "prodpolymarketwatchersecret027BB9BD"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-fargate-service/Service"
+   }
+  },
+  "prodpolymarketwatcheralb5E54BBCB": {
+   "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+   "Properties": {
+    "LoadBalancerAttributes": [
+     {
+      "Key": "deletion_protection.enabled",
+      "Value": "false"
+     }
+    ],
+    "Name": "polymarket-watcher-prod",
+    "Scheme": "internet-facing",
+    "SecurityGroups": [
+     {
+      "Fn::GetAtt": [
+       "prodpolymarketwatcheralbSecurityGroupCF65F765",
+       "GroupId"
+      ]
+     }
+    ],
+    "Subnets": [
+     "subnet-0ac12a9a3d6c4d20e",
+     "subnet-030ad2f6a8dd887e2"
+    ],
+    "Type": "application"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-alb/Resource"
+   }
+  },
+  "prodpolymarketwatcheralbSecurityGroupCF65F765": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Automatically created Security Group for ELB PolymarketWatcherStackprodpolymarketwatcheralbC0082578",
+    "SecurityGroupIngress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow from anyone on port 80",
+      "FromPort": 80,
+      "IpProtocol": "tcp",
+      "ToPort": 80
+     }
+    ],
+    "VpcId": "vpc-01386cc23ddfbbb97"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-alb/SecurityGroup/Resource"
+   }
+  },
+  "prodpolymarketwatcheralbSecurityGrouptoPolymarketWatcherStackprodpolymarketwatcherfargatesg877D8DC580524A77B6": {
+   "Type": "AWS::EC2::SecurityGroupEgress",
+   "Properties": {
+    "Description": "Load balancer to target",
+    "DestinationSecurityGroupId": {
+     "Fn::GetAtt": [
+      "prodpolymarketwatcherfargatesgD56EE872",
+      "GroupId"
+     ]
+    },
+    "FromPort": 80,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "prodpolymarketwatcheralbSecurityGroupCF65F765",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "ToPort": 80
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-alb/SecurityGroup/to PolymarketWatcherStackprodpolymarketwatcherfargatesg877D8DC5:80"
+   }
+  },
+  "prodpolymarketwatcheralbprodpolymarketwatcherlistener8118F4F9": {
+   "Type": "AWS::ElasticLoadBalancingV2::Listener",
+   "Properties": {
+    "DefaultActions": [
+     {
+      "TargetGroupArn": {
+       "Ref": "prodpolymarketwatchertargetgroup41A3801A"
+      },
+      "Type": "forward"
+     }
+    ],
+    "LoadBalancerArn": {
+     "Ref": "prodpolymarketwatcheralb5E54BBCB"
+    },
+    "Port": 80,
+    "Protocol": "HTTP"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-alb/prod-polymarket-watcher-listener/Resource"
+   }
+  },
+  "prodpolymarketwatchertargetgroup41A3801A": {
+   "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+   "Properties": {
+    "HealthCheckIntervalSeconds": 30,
+    "HealthCheckPath": "/health",
+    "HealthCheckTimeoutSeconds": 10,
+    "HealthyThresholdCount": 2,
+    "Matcher": {
+     "HttpCode": "200"
+    },
+    "Port": 80,
+    "Protocol": "HTTP",
+    "TargetGroupAttributes": [
+     {
+      "Key": "deregistration_delay.timeout_seconds",
+      "Value": "10"
+     },
+     {
+      "Key": "stickiness.enabled",
+      "Value": "false"
+     }
+    ],
+    "TargetType": "ip",
+    "UnhealthyThresholdCount": 3,
+    "VpcId": "vpc-01386cc23ddfbbb97"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/prod-polymarket-watcher-target-group/Resource"
+   }
+  },
+  "CpuAlarm87CA37A9": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "CPU utilization is above 80%",
+    "AlarmName": "prod-polymarket-watcher-cpu-high",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "DatapointsToAlarm": 2,
+    "Dimensions": [
+     {
+      "Name": "ClusterName",
+      "Value": {
+       "Ref": "prodpolymarketwatchercluster1B1ED10A"
+      }
+     },
+     {
+      "Name": "ServiceName",
+      "Value": {
+       "Fn::GetAtt": [
+        "prodpolymarketwatcherfargateserviceService081C4C1A",
+        "Name"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "CPUUtilization",
+    "Namespace": "AWS/ECS",
+    "Period": 300,
+    "Statistic": "Average",
+    "Threshold": 80
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/CpuAlarm/Resource"
+   }
+  },
+  "MemoryAlarm2E786DB4": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Memory utilization is above 80%",
+    "AlarmName": "prod-polymarket-watcher-memory-high",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "DatapointsToAlarm": 2,
+    "Dimensions": [
+     {
+      "Name": "ClusterName",
+      "Value": {
+       "Ref": "prodpolymarketwatchercluster1B1ED10A"
+      }
+     },
+     {
+      "Name": "ServiceName",
+      "Value": {
+       "Fn::GetAtt": [
+        "prodpolymarketwatcherfargateserviceService081C4C1A",
+        "Name"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "MemoryUtilization",
+    "Namespace": "AWS/ECS",
+    "Period": 300,
+    "Statistic": "Average",
+    "Threshold": 80
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/MemoryAlarm/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/31QS2/CMAz+LdxDxqppdx7bhIS0Cbgjk3qZaZpUsQtCVf/7lBQQ26Sd/L3i2C508VToyQhOPDZlNXa0191GwFRqjRzaaFDBiXcdo4koXIMHi1F3m8zV/NMPqFdoWHdz17JgTPoVvkK0ILgFrhb4SZ6Egk+B30rwAuQx3mmXtxuMRzI4/JZhr1ywrLtVsG8xtE2yrrhXBLXu1sHlF7l+BEfmnOiA0rhF3qKNJOdbj/+FpbcRmf/oL1lOPeMOmFFYL4KpMC5rsDhNSvL0GpvAJCGeZ8Co0AELGReg3IMDb8jbY6G7adM4MpAusApQzrI3HPUHv88RC/pL5orv/C1Ei3Lb6o72yrjQlicQ86W7qYNYp0QGfa/y8BsBS94m/b2VppVe+VCiPvDDsSj047OejA5MNI6tF6pRr4f6DeE7ILNeAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PolymarketWatcherStack/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "ServiceUrl": {
+   "Description": "Load balancer URL",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "http://",
+      {
+       "Fn::GetAtt": [
+        "prodpolymarketwatcheralb5E54BBCB",
+        "DNSName"
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  "HealthCheckUrl": {
+   "Description": "Health check endpoint",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "http://",
+      {
+       "Fn::GetAtt": [
+        "prodpolymarketwatcheralb5E54BBCB",
+        "DNSName"
+       ]
+      },
+      "/health"
+     ]
+    ]
+   }
+  },
+  "InngestUrl": {
+   "Description": "Inngest webhook endpoint",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "http://",
+      {
+       "Fn::GetAtt": [
+        "prodpolymarketwatcheralb5E54BBCB",
+        "DNSName"
+       ]
+      },
+      "/api/inngest"
+     ]
+    ]
+   }
+  },
+  "LogGroupName": {
+   "Description": "CloudWatch log group",
+   "Value": {
+    "Ref": "prodpolymarketwatcherloggroup22C7F41A"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
