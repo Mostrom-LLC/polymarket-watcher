@@ -11,6 +11,17 @@ import { z } from "zod";
 // =============================================================================
 
 /**
+ * Market outcome from Gamma API
+ */
+export const gammaOutcomeSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  price: z.string().transform((v) => parseFloat(v)),
+});
+
+export type GammaOutcome = z.infer<typeof gammaOutcomeSchema>;
+
+/**
  * Helper to parse JSON strings or pass through arrays
  * The Gamma API sometimes returns these fields as JSON-encoded strings
  */
@@ -27,15 +38,61 @@ const jsonStringOrArray = <T>(itemSchema: z.ZodType<T>) =>
   ]);
 
 /**
- * Market outcome from Gamma API
+ * Outcomes schema - handles multiple formats from the API:
+ * 1. JSON string of titles: "[\"Yes\",\"No\"]"
+ * 2. Array of strings: ["Yes", "No"]
+ * 3. Array of outcome objects: [{id: "...", title: "Yes", price: "0.65"}, ...]
+ * 
+ * Always normalizes to string[] (outcome titles)
  */
-export const gammaOutcomeSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  price: z.string().transform((v) => parseFloat(v)),
-});
+const outcomesSchema = z.union([
+  // JSON string that parses to string[] or object[]
+  z.string().transform((s) => {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+        return parsed as string[];
+      }
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === "object" && item !== null)) {
+        return parsed.map((item) => (item as { title?: string }).title ?? "") as string[];
+      }
+      return [] as string[];
+    } catch {
+      return [] as string[];
+    }
+  }),
+  // Array of strings
+  z.array(z.string()),
+  // Array of outcome objects - extract titles
+  z.array(gammaOutcomeSchema).transform((arr) => arr.map((o) => o.title)),
+]);
 
-export type GammaOutcome = z.infer<typeof gammaOutcomeSchema>;
+/**
+ * Outcome prices schema - handles:
+ * 1. JSON string of price strings: "[\"0.65\",\"0.35\"]"
+ * 2. Array of strings: ["0.65", "0.35"]
+ * 3. Array of numbers: [0.65, 0.35]
+ * 
+ * Always normalizes to number[]
+ */
+const outcomePricesSchema = z.union([
+  // JSON string that parses to string[] or number[]
+  z.string().transform((s) => {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return parsed.map((v) => typeof v === "string" ? parseFloat(v) : Number(v));
+      }
+      return [] as number[];
+    } catch {
+      return [] as number[];
+    }
+  }),
+  // Array of strings - convert to numbers
+  z.array(z.string()).transform((arr) => arr.map((v) => parseFloat(v))),
+  // Array of numbers
+  z.array(z.number()),
+]);
 
 /**
  * Market from Gamma API
@@ -53,11 +110,9 @@ export const gammaMarketSchema = z.object({
   closed: z.boolean(),
   archived: z.boolean().optional(),
   acceptingOrders: z.boolean().optional(),
-  // These fields can come as JSON strings or arrays from the API
-  outcomes: jsonStringOrArray(z.string()).optional(),
-  outcomePrices: jsonStringOrArray(z.string()).transform((arr) => 
-    arr.map((v) => typeof v === "string" ? parseFloat(v) : v)
-  ).optional(),
+  // These fields can come as JSON strings, arrays of strings, or arrays of objects
+  outcomes: outcomesSchema.optional(),
+  outcomePrices: outcomePricesSchema.optional(),
   clobTokenIds: jsonStringOrArray(z.string()).optional(),
 });
 
