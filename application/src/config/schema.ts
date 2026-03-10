@@ -51,7 +51,7 @@ export const globalSettingsSchema = z.object({
  * AI settings schema
  */
 export const aiSettingsSchema = z.object({
-  model: z.string().default("claude-sonnet-4-20250514"),
+  model: z.string().default("gemini-2.5-flash"),
   maxTokens: z.number().min(100).max(8192).default(1024),
   temperature: z.number().min(0).max(2).default(0.3),
 });
@@ -76,8 +76,8 @@ export const envConfigSchema = z.object({
   INNGEST_EVENT_KEY: z.string().optional(),
   INNGEST_SIGNING_KEY: z.string().optional(),
   
-  // Anthropic
-  ANTHROPIC_API_KEY: z.string().min(1),
+  // Gemini
+  GEMINI_API_KEY: z.string().min(1),
   
   // Slack
   SLACK_BOT_TOKEN: z.string().min(1),

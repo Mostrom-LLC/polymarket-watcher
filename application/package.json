@@ -14,7 +14,7 @@
     "test:watch": "npx vitest"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/genai": "^1.44.0",
     "@slack/web-api": "^7.14.1",
     "express": "^4.21.2",
     "inngest": "^3.52.6",

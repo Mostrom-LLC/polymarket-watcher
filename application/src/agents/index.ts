@@ -1,7 +1,7 @@
 /**
  * AI Analysis Agents
  * 
- * This module provides AI-powered analysis agents using Anthropic's Claude.
+ * This module provides AI-powered analysis agents using Gemini.
  */
 
 export { TopicClassifier } from "./topic-classifier.js";

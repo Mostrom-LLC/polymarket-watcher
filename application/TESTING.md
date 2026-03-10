@@ -57,7 +57,7 @@ TEST_USER_PASSWORD=...       # Real password
 ### What's NOT Allowed
 
 - ❌ Mocking HTTP responses from external APIs
-- ❌ Mocking SDK clients (Anthropic, Gemini, Slack)
+- ❌ Mocking SDK clients (Gemini, Slack)
 - ❌ Mocking authentication/OAuth flows
 - ❌ In-memory databases instead of real ones
 - ❌ Snapshot tests of API responses
