@@ -96,6 +96,10 @@ const discoverMarkets = inngest.createFunction(
       model: "claude-3-5-haiku-20241022",
     });
 
+    if (!classifier.isAiEnabled()) {
+      console.log("[discover-markets] AI classification disabled - no ANTHROPIC_API_KEY");
+    }
+
     // Step 1: Fetch markets closing in next 24 hours
     const marketsRaw = await step.run("fetch-closing-markets", async () => {
       const closingSoon = await gammaApi.getMarketsClosingSoon(24);
@@ -164,6 +168,11 @@ const monitorTrades = inngest.createFunction(
     const clobApi = new ClobApiClient();
     const cache = new MarketCache(config.env.REDIS_URL);
     const analyzer = new WhaleAnalyzer(config.env.ANTHROPIC_API_KEY);
+    
+    if (!analyzer.isAiEnabled()) {
+      console.log("[monitor-trades] AI whale analysis disabled - no ANTHROPIC_API_KEY");
+    }
+    
     const notifier = new SlackNotifier(
       config.env.SLACK_BOT_TOKEN,
       config.env.SLACK_DEFAULT_CHANNEL

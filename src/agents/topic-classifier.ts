@@ -24,22 +24,45 @@ interface CacheEntry {
  * Topic Classifier Agent
  * 
  * Uses Claude Haiku to classify markets by topic relevance.
+ * When no API key is provided, returns pass-through results (all markets considered relevant).
  */
 export class TopicClassifier {
-  private client: Anthropic;
+  private client: Anthropic | null;
   private model: string;
   private maxTokens: number;
   private cache: Map<string, CacheEntry> = new Map();
   private cacheTtlMs: number;
+  private readonly aiEnabled: boolean;
 
   constructor(
-    apiKey: string,
+    apiKey: string | undefined,
     options: { model?: string; maxTokens?: number; cacheTtlMs?: number } = {}
   ) {
-    this.client = new Anthropic({ apiKey });
+    this.aiEnabled = !!apiKey;
+    this.client = apiKey ? new Anthropic({ apiKey }) : null;
     this.model = options.model ?? "claude-3-5-haiku-20241022";
     this.maxTokens = options.maxTokens ?? 512;
     this.cacheTtlMs = options.cacheTtlMs ?? 60 * 60 * 1000; // 1 hour default
+  }
+
+  /**
+   * Check if AI classification is enabled
+   */
+  isAiEnabled(): boolean {
+    return this.aiEnabled;
+  }
+
+  /**
+   * Create a pass-through result when AI is disabled
+   */
+  private createPassThroughResult(market: NormalizedMarket, topics: string[]): ClassificationResult {
+    return {
+      market,
+      isRelevant: true,
+      matchedTopics: topics,
+      relevanceScore: 100,
+      reasoning: "AI classification disabled - passing through all markets",
+    };
   }
 
   /**
@@ -63,6 +86,11 @@ export class TopicClassifier {
     market: NormalizedMarket,
     topics: string[]
   ): Promise<ClassificationResult> {
+    // If AI is disabled, return pass-through result
+    if (!this.aiEnabled || !this.client) {
+      return this.createPassThroughResult(market, topics);
+    }
+
     // Check cache first
     const cacheKey = this.getCacheKey(market.id, topics);
     const cached = this.cache.get(cacheKey);

@@ -18,19 +18,50 @@ export interface WhaleAnalysisResult {
  * Whale Analyzer Agent
  * 
  * Uses Claude Sonnet to analyze large trade patterns and provide insights.
+ * When no API key is provided, returns basic analysis based on trade data alone.
  */
 export class WhaleAnalyzer {
-  private client: Anthropic;
+  private client: Anthropic | null;
   private model: string;
   private maxTokens: number;
+  private readonly aiEnabled: boolean;
 
   constructor(
-    apiKey: string,
+    apiKey: string | undefined,
     options: { model?: string; maxTokens?: number } = {}
   ) {
-    this.client = new Anthropic({ apiKey });
+    this.aiEnabled = !!apiKey;
+    this.client = apiKey ? new Anthropic({ apiKey }) : null;
     this.model = options.model ?? "claude-sonnet-4-20250514";
     this.maxTokens = options.maxTokens ?? 1024;
+  }
+
+  /**
+   * Check if AI analysis is enabled
+   */
+  isAiEnabled(): boolean {
+    return this.aiEnabled;
+  }
+
+  /**
+   * Create basic analysis from trade data without AI
+   */
+  private createBasicAnalysis(
+    trades: NormalizedTrade[],
+    largestBets: NormalizedTrade[],
+    yesVolume: number,
+    noVolume: number,
+    totalVolume: number
+  ): WhaleAnalysisResult {
+    return {
+      hasWhaleActivity: totalVolume > 100000,
+      largestBets,
+      marketLean: yesVolume > noVolume * 1.2 ? "YES" : noVolume > yesVolume * 1.2 ? "NO" : "NEUTRAL",
+      momentum: `$${Math.abs(yesVolume - noVolume).toFixed(0)} toward ${yesVolume > noVolume ? "YES" : "NO"}`,
+      recommendation: "HOLD",
+      confidence: "LOW",
+      reasoning: this.aiEnabled ? "Analysis failed, using trade data fallback" : "AI analysis disabled - using trade data only",
+    };
   }
 
   /**
@@ -67,6 +98,11 @@ export class WhaleAnalyzer {
     const yesVolume = yesBets.reduce((sum, t) => sum + t.size * t.price, 0);
     const noVolume = noBets.reduce((sum, t) => sum + t.size * t.price, 0);
     const totalVolume = yesVolume + noVolume;
+
+    // If AI is disabled, return basic analysis
+    if (!this.aiEnabled || !this.client) {
+      return this.createBasicAnalysis(trades, largestBets, yesVolume, noVolume, totalVolume);
+    }
 
     const tradesSummary = largestBets
       .map((t) => {
@@ -146,15 +182,7 @@ Analyze this activity and respond in JSON:
       console.error("[WhaleAnalyzer] Failed to parse response:", errorText);
       
       // Return a default analysis based on trade data
-      return {
-        hasWhaleActivity: totalVolume > 100000,
-        largestBets,
-        marketLean: yesVolume > noVolume * 1.2 ? "YES" : noVolume > yesVolume * 1.2 ? "NO" : "NEUTRAL",
-        momentum: `$${Math.abs(yesVolume - noVolume).toFixed(0)} toward ${yesVolume > noVolume ? "YES" : "NO"}`,
-        recommendation: "HOLD",
-        confidence: "LOW",
-        reasoning: "Analysis failed, using trade data fallback",
-      };
+      return this.createBasicAnalysis(trades, largestBets, yesVolume, noVolume, totalVolume);
     }
   }
 
