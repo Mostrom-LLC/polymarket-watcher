@@ -4,6 +4,7 @@ import { ClobApiClient } from "../api/clob-client.js";
 import { MarketCache } from "../cache/redis.js";
 import { TopicClassifier } from "../agents/topic-classifier.js";
 import { WhaleAnalyzer } from "../agents/whale-analyzer.js";
+import { VoteRecommender } from "../agents/vote-recommender.js";
 import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary } from "../notifications/slack.js";
 import { getConfig } from "../config/loader.js";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
@@ -286,6 +287,11 @@ const closeAlert = inngest.createFunction(
       config.env.SLACK_BOT_TOKEN,
       config.env.SLACK_DEFAULT_CHANNEL
     );
+    const recommender = new VoteRecommender(config.env.ANTHROPIC_API_KEY);
+
+    if (!recommender.isAiEnabled()) {
+      console.log("[close-alert] AI recommendations disabled - no ANTHROPIC_API_KEY");
+    }
 
     // Get today's markets
     const marketsRaw = await step.run("get-today-markets", async () => {
@@ -303,15 +309,22 @@ const closeAlert = inngest.createFunction(
 
       // Alert at T-30 minutes (between 25-35 min window to catch it)
       if (minutesUntilClose > 25 && minutesUntilClose <= 35) {
-        const closeAlertKey = `close-alerted:${market.id}`;
         const wasAlerted = await step.run(`check-close-alert-${market.id}`, async () => {
           return cache.wasAlerted(market.id);
         });
 
         if (!wasAlerted) {
+          // Get vote recommendation
+          const recommendation = await step.run(`get-recommendation-${market.id}`, async () => {
+            // Get recent large trades for better recommendation
+            const recentTrades = await cache.getLargeTrades(market.id);
+            return recommender.getRecommendation(market, recentTrades);
+          });
+
           await step.run(`send-close-alert-${market.id}`, async () => {
             const alert: MarketAlert = {
               market,
+              recommendation: recommendation.formatted,
             };
             await notifier.sendMarketAlert(alert);
             // Mark as alerted for 1 hour (won't re-alert)

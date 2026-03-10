@@ -9,3 +9,6 @@ export type { ClassificationResult } from "./topic-classifier.js";
 
 export { WhaleAnalyzer } from "./whale-analyzer.js";
 export type { WhaleAnalysisResult } from "./whale-analyzer.js";
+
+export { VoteRecommender } from "./vote-recommender.js";
+export type { VoteRecommendation } from "./vote-recommender.js";
