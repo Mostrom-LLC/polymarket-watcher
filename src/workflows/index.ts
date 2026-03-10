@@ -197,11 +197,11 @@ const monitorTrades = inngest.createFunction(
     }
 
     for (const market of marketsClosingSoon) {
-      // Fetch large trades ($10k+) for each token - lowered from $50k per MOS-94
+      // Fetch large trades ($50k+) for each token - whale threshold per MOS-94
       const largeTradesRaw = await step.run(`fetch-trades-${market.id}`, async () => {
         const allTrades: NormalizedTrade[] = [];
         for (const tokenId of market.tokenIds) {
-          const trades = await clobApi.getLargeTrades(tokenId, 10000, { limit: 20 });
+          const trades = await clobApi.getLargeTrades(tokenId, 50000, { limit: 20 });
           const normalized = trades.map((t) => clobApi.normalizeTrade(t, market.id));
           allTrades.push(...normalized);
         }

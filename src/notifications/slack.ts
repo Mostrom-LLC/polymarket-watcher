@@ -262,7 +262,7 @@ export class SlackNotifier {
 
     let whaleSignals = "";
     if (traderInfo?.isNew) whaleSignals += "  • New account ✓\n";
-    if (tradeValue >= 10000) whaleSignals += "  • Large bet ($10k+) ✓\n";
+    if (tradeValue >= 50000) whaleSignals += "  • Large bet ($50k+) ✓\n";
     if (market.endDate && (market.endDate.getTime() - Date.now()) < 24 * 60 * 60 * 1000) {
       whaleSignals += "  • Closing within 24h ✓\n";
     }
