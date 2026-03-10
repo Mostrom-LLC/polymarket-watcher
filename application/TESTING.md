@@ -68,6 +68,7 @@ TEST_USER_PASSWORD=...       # Real password
 
 ```bash
 # Must have real credentials configured
+cd application
 cp .env.example .env
 # Fill in real API keys AND test user credentials
 
