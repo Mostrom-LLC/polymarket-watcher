@@ -6,7 +6,7 @@ services:
   # ===================
   polymarket-watcher:
     build:
-      context: .
+      context: ../application
       dockerfile: Dockerfile
     container_name: polymarket-watcher
     restart: unless-stopped
@@ -24,7 +24,7 @@ services:
       - INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY}
       - INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY}
     volumes:
-      - ./config:/app/config:ro
+      - ../application/config:/app/config:ro
     depends_on:
       redis:
         condition: service_healthy

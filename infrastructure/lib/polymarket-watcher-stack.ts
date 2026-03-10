@@ -103,7 +103,7 @@ export class PolymarketWatcherStack extends cdk.Stack {
         publicLoadBalancer: true,
         assignPublicIp: false,
         taskImageOptions: {
-          image: ecs.ContainerImage.fromAsset(".."),
+          image: ecs.ContainerImage.fromAsset("../application"),
           containerPort: 3000,
           environment: {
             NODE_ENV: "production",
