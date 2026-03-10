@@ -22,8 +22,8 @@ npm install
 ```bash
 # Create secrets (replace with your actual values)
 aws secretsmanager create-secret \
-  --name /polymarket-watcher/anthropic-api-key \
-  --secret-string "sk-ant-..."
+  --name /polymarket-watcher/secrets \
+  --secret-string '{"GEMINI_API_KEY":"AIza...","SLACK_BOT_TOKEN":"xoxb-...","REDIS_URL":"redis://...","INNGEST_EVENT_KEY":"...","INNGEST_SIGNING_KEY":"..."}'
 
 aws secretsmanager create-secret \
   --name /polymarket-watcher/slack-bot-token \
@@ -82,10 +82,7 @@ cdk destroy
                               ▼
               ┌───────────────────────────────┐
               │       Secrets Manager          │
-              │  - anthropic-api-key           │
-              │  - slack-bot-token             │
-              │  - redis-url                   │
-              │  - inngest-*                   │
+              │  /polymarket-watcher/secrets   │
               └───────────────────────────────┘
                               │
                               ▼

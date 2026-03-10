@@ -18,7 +18,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - CONFIG_PATH=config/user-config.yaml
       # These should be set via .env file or secrets
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - SLACK_DEFAULT_CHANNEL=${SLACK_DEFAULT_CHANNEL:-polymarket-alerts}
       - INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY}

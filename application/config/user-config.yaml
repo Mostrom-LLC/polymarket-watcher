@@ -45,7 +45,7 @@ settings:
 # AI analysis settings
 ai:
   # Model to use for analysis
-  model: "claude-sonnet-4-20250514"
+  model: "gemini-2.5-flash"
   # Maximum tokens for analysis response
   maxTokens: 1024
   # Temperature for analysis

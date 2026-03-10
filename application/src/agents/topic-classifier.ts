@@ -1,5 +1,40 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI, Type } from "@google/genai";
+import { z } from "zod";
 import type { NormalizedMarket } from "../api/types.js";
+
+const classificationPayloadSchema = z.object({
+  isRelevant: z.boolean().optional(),
+  matchedTopics: z.array(z.string()).optional(),
+  relevanceScore: z.number().optional(),
+  reasoning: z.string().optional(),
+});
+
+const classificationResponseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    isRelevant: { type: Type.BOOLEAN },
+    matchedTopics: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+    },
+    relevanceScore: { type: Type.NUMBER },
+    reasoning: { type: Type.STRING },
+  },
+  required: ["isRelevant", "matchedTopics", "relevanceScore", "reasoning"],
+};
+
+function parseClassificationPayload(rawText: string) {
+  const trimmed = rawText.trim();
+  const jsonText = trimmed.startsWith("{")
+    ? trimmed
+    : trimmed.match(/\{[\s\S]*\}/)?.[0];
+
+  if (!jsonText) {
+    throw new Error("No JSON found in response");
+  }
+
+  return classificationPayloadSchema.parse(JSON.parse(jsonText));
+}
 
 /**
  * Classification result for a single market
@@ -23,22 +58,24 @@ interface CacheEntry {
 /**
  * Topic Classifier Agent
  * 
- * Uses Claude Haiku to classify markets by topic relevance.
+ * Uses Gemini to classify markets by topic relevance.
  */
 export class TopicClassifier {
-  private client: Anthropic;
+  private client: GoogleGenAI;
   private model: string;
   private maxTokens: number;
+  private temperature: number;
   private cache: Map<string, CacheEntry> = new Map();
   private cacheTtlMs: number;
 
   constructor(
     apiKey: string,
-    options: { model?: string; maxTokens?: number; cacheTtlMs?: number } = {}
+    options: { model?: string; maxTokens?: number; temperature?: number; cacheTtlMs?: number } = {}
   ) {
-    this.client = new Anthropic({ apiKey });
-    this.model = options.model ?? "claude-3-5-haiku-20241022";
+    this.client = new GoogleGenAI({ apiKey });
+    this.model = options.model ?? "gemini-2.5-flash";
     this.maxTokens = options.maxTokens ?? 512;
+    this.temperature = options.temperature ?? 0.3;
     this.cacheTtlMs = options.cacheTtlMs ?? 60 * 60 * 1000; // 1 hour default
   }
 
@@ -92,35 +129,26 @@ Rules:
 - relevanceScore: 0-100 based on how clearly the market relates to the topics
 - reasoning: concise explanation`;
 
-    const response = await this.client.messages.create({
+    const response = await this.client.models.generateContent({
       model: this.model,
-      max_tokens: this.maxTokens,
-      messages: [{ role: "user", content: prompt }],
+      contents: prompt,
+      config: {
+        maxOutputTokens: this.maxTokens,
+        temperature: this.temperature,
+        responseMimeType: "application/json",
+        responseSchema: classificationResponseSchema,
+      },
     });
 
-    const content = response.content[0];
-    if (!content || content.type !== "text") {
-      throw new Error("Unexpected response type from Claude");
-    }
-
     try {
-      const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error("No JSON found in response");
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]) as {
-        isRelevant: boolean;
-        matchedTopics: string[];
-        relevanceScore: number;
-        reasoning: string;
-      };
+      const parsed = parseClassificationPayload(response.text ?? "");
+      const relevanceScore = Math.min(100, Math.max(0, parsed.relevanceScore ?? 0));
 
       const result: ClassificationResult = {
         market,
-        isRelevant: parsed.isRelevant ?? parsed.relevanceScore >= 50,
+        isRelevant: parsed.isRelevant ?? relevanceScore >= 50,
         matchedTopics: parsed.matchedTopics ?? [],
-        relevanceScore: Math.min(100, Math.max(0, parsed.relevanceScore ?? 0)),
+        relevanceScore,
         reasoning: parsed.reasoning ?? "",
       };
 
@@ -129,8 +157,7 @@ Rules:
 
       return result;
     } catch (error) {
-      const errorText = content.type === "text" ? content.text : "unknown";
-      console.error("[TopicClassifier] Failed to parse response:", errorText);
+      console.error("[TopicClassifier] Failed to parse response:", response.text ?? "unknown");
       return {
         market,
         isRelevant: false,
