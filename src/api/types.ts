@@ -11,6 +11,22 @@ import { z } from "zod";
 // =============================================================================
 
 /**
+ * Helper to parse JSON strings or pass through arrays
+ * The Gamma API sometimes returns these fields as JSON-encoded strings
+ */
+const jsonStringOrArray = <T>(itemSchema: z.ZodType<T>) =>
+  z.union([
+    z.string().transform((s) => {
+      try {
+        return JSON.parse(s) as T[];
+      } catch {
+        return [] as T[];
+      }
+    }),
+    z.array(itemSchema),
+  ]);
+
+/**
  * Market outcome from Gamma API
  */
 export const gammaOutcomeSchema = z.object({
@@ -37,9 +53,12 @@ export const gammaMarketSchema = z.object({
   closed: z.boolean(),
   archived: z.boolean().optional(),
   acceptingOrders: z.boolean().optional(),
-  outcomes: z.array(gammaOutcomeSchema).optional(),
-  outcomePrices: z.array(z.string().transform((v) => parseFloat(v))).optional(),
-  clobTokenIds: z.array(z.string()).optional(),
+  // These fields can come as JSON strings or arrays from the API
+  outcomes: jsonStringOrArray(z.string()).optional(),
+  outcomePrices: jsonStringOrArray(z.string()).transform((arr) => 
+    arr.map((v) => typeof v === "string" ? parseFloat(v) : v)
+  ).optional(),
+  clobTokenIds: jsonStringOrArray(z.string()).optional(),
 });
 
 export type GammaMarket = z.infer<typeof gammaMarketSchema>;
