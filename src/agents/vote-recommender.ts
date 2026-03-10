@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
 /**
@@ -14,23 +14,21 @@ export interface VoteRecommendation {
 /**
  * Vote Recommender Agent
  * 
- * Analyzes market data to provide vote recommendations.
+ * Analyzes market data to provide vote recommendations using Gemini.
  * When no API key is provided, returns basic recommendations based on odds alone.
  */
 export class VoteRecommender {
-  private client: Anthropic | null;
+  private client: GoogleGenerativeAI | null;
   private model: string;
-  private maxTokens: number;
   private readonly aiEnabled: boolean;
 
   constructor(
     apiKey: string | undefined,
-    options: { model?: string; maxTokens?: number } = {}
+    options: { model?: string } = {}
   ) {
     this.aiEnabled = !!apiKey;
-    this.client = apiKey ? new Anthropic({ apiKey }) : null;
-    this.model = options.model ?? "claude-3-5-haiku-20241022";
-    this.maxTokens = options.maxTokens ?? 512;
+    this.client = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+    this.model = options.model ?? "gemini-2.0-flash";
   }
 
   /**
@@ -115,7 +113,7 @@ Based on:
 - Time until close (opportunity window)
 ${tradeMomentum ? "- Recent large trade momentum" : ""}
 
-Provide a recommendation in JSON format:
+Provide a recommendation in JSON format only (no markdown code blocks):
 {
   "recommendation": "VOTE_YES" | "VOTE_NO" | "HOLD",
   "confidence": "HIGH" | "MEDIUM" | "LOW",
@@ -130,18 +128,11 @@ Rules:
 - LOW confidence: Near 50/50 or very low volume`;
 
     try {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        messages: [{ role: "user", content: prompt }],
-      });
+      const model = this.client.getGenerativeModel({ model: this.model });
+      const response = await model.generateContent(prompt);
+      const text = response.response.text();
 
-      const content = response.content[0];
-      if (!content || content.type !== "text") {
-        return this.createBasicRecommendation(market);
-      }
-
-      const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         return this.createBasicRecommendation(market);
       }
