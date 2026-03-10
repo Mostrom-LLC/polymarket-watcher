@@ -31,6 +31,18 @@ export interface WhaleAlert {
 }
 
 /**
+ * Whale exit alert payload
+ */
+export interface WhaleExitAlert {
+  market: NormalizedMarket;
+  trade: NormalizedTrade;
+  previousPosition?: {
+    outcome: string;
+    size: number;
+  };
+}
+
+/**
  * Daily summary payload
  */
 export interface DailySummary {
@@ -262,9 +274,9 @@ export class SlackNotifier {
 
     let whaleSignals = "";
     if (traderInfo?.isNew) whaleSignals += "  • New account ✓\n";
-    if (tradeValue >= 50000) whaleSignals += "  • Large bet ✓\n";
+    if (tradeValue >= 50000) whaleSignals += "  • Large bet ($50k+) ✓\n";
     if (market.endDate && (market.endDate.getTime() - Date.now()) < 24 * 60 * 60 * 1000) {
-      whaleSignals += "  • Close to event ✓\n";
+      whaleSignals += "  • Closing within 24h ✓\n";
     }
 
     const fallbackText = `🚨 WHALE ALERT - $${tradeValue.toFixed(0)} on ${market.question}`;
@@ -347,6 +359,120 @@ export class SlackNotifier {
             },
             url: `https://polymarket.com/event/${market.slug}`,
             action_id: `view_whale_market_${market.id}`,
+          },
+        ],
+      }
+    );
+
+    return this.client.chat.postMessage({
+      channel: targetChannel,
+      text: fallbackText,
+      blocks,
+      unfurl_links: false,
+    });
+  }
+
+  /**
+   * Send a whale exit alert (large SELL order)
+   */
+  async sendWhaleExitAlert(
+    alert: WhaleExitAlert,
+    channel?: string
+  ): Promise<ChatPostMessageResponse | null> {
+    const targetChannel = channel ?? this.defaultChannel;
+    
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
+    }
+
+    const { market, trade, previousPosition } = alert;
+    const tradeValue = trade.size * trade.price;
+    const timeUntilClose = market.endDate 
+      ? this.formatTimeUntil(market.endDate) 
+      : "Unknown";
+
+    const fallbackText = `🐋⚠️ WHALE EXIT - $${tradeValue.toFixed(0)} sold on ${market.question}`;
+    const formattedValue = tradeValue.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+    // Block Kit formatted message
+    const blocks: (KnownBlock | Block)[] = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "🐋⚠️ WHALE EXIT ALERT",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*${market.question}*\n⏰ Closes in: ${timeUntilClose}`,
+        },
+      },
+      {
+        type: "section",
+        fields: [
+          {
+            type: "mrkdwn",
+            text: `*Sold:*\n$${formattedValue}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Position:*\n${trade.outcome ?? "Unknown"}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Account:*\n${trade.traderAddress ?? "Unknown"}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*When:*\n${this.formatTimeAgo(trade.timestamp)}`,
+          },
+        ],
+      },
+    ];
+
+    // Add previous position context if available
+    if (previousPosition) {
+      blocks.push({
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `📉 *Previous position:* $${previousPosition.size.toLocaleString()} on ${previousPosition.outcome}`,
+          },
+        ],
+      });
+    }
+
+    // Add warning context
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `⚠️ *Whale exiting position* — may signal lack of confidence`,
+        },
+      ],
+    });
+
+    // Add action button
+    blocks.push(
+      { type: "divider" },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "View Market",
+              emoji: true,
+            },
+            url: `https://polymarket.com/event/${market.slug}`,
+            action_id: `view_whale_exit_${market.id}`,
           },
         ],
       }
