@@ -3,7 +3,8 @@ import { inngest, functions } from "./workflows/index.js";
 import { getConfig } from "./config/loader.js";
 import { MarketCache } from "./cache/redis.js";
 import { SlackNotifier } from "./notifications/slack.js";
-import express, { type Request, type Response } from "express";
+import express from "express";
+import type { Request, Response } from "express";
 
 /**
  * Polymarket Watcher - Entry Point
