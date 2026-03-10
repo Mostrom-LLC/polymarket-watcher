@@ -55,11 +55,27 @@ export class TopicClassifier {
   }
 
   /**
-   * Classify a single market against topics
+   * Sleep helper for retry delays
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Check if error is a rate limit error
+   */
+  private isRateLimitError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("429") || message.includes("Too Many Requests") || message.includes("quota");
+  }
+
+  /**
+   * Classify a single market against topics with retry logic
    */
   async classifyMarket(
     market: NormalizedMarket,
-    topics: string[]
+    topics: string[],
+    maxRetries: number = 3
   ): Promise<ClassificationResult> {
     // Check cache first
     const cacheKey = this.getCacheKey(market.id, topics);
@@ -90,45 +106,65 @@ Rules:
 - relevanceScore: 0-100 based on how clearly the market relates to the topics
 - reasoning: concise explanation`;
 
-    try {
-      const model = this.client.getGenerativeModel({ model: this.model });
-      const response = await model.generateContent(prompt);
-      const text = response.response.text();
+    let lastError: unknown;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const model = this.client.getGenerativeModel({ model: this.model });
+        const response = await model.generateContent(prompt);
+        const text = response.response.text();
 
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error("No JSON found in response");
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          throw new Error("No JSON found in response");
+        }
+
+        const parsed = JSON.parse(jsonMatch[0]) as {
+          isRelevant: boolean;
+          matchedTopics: string[];
+          relevanceScore: number;
+          reasoning: string;
+        };
+
+        const result: ClassificationResult = {
+          market,
+          isRelevant: parsed.isRelevant ?? parsed.relevanceScore >= 50,
+          matchedTopics: parsed.matchedTopics ?? [],
+          relevanceScore: Math.min(100, Math.max(0, parsed.relevanceScore ?? 0)),
+          reasoning: parsed.reasoning ?? "",
+        };
+
+        // Cache the result
+        this.cache.set(cacheKey, { result, timestamp: Date.now() });
+
+        return result;
+      } catch (error) {
+        lastError = error;
+        
+        // Only retry on rate limit errors
+        if (this.isRateLimitError(error) && attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 1s, 2s, 4s
+          console.warn(`[TopicClassifier] Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await this.sleep(delay);
+          continue;
+        }
+        
+        // Non-retryable error or max retries reached
+        break;
       }
-
-      const parsed = JSON.parse(jsonMatch[0]) as {
-        isRelevant: boolean;
-        matchedTopics: string[];
-        relevanceScore: number;
-        reasoning: string;
-      };
-
-      const result: ClassificationResult = {
-        market,
-        isRelevant: parsed.isRelevant ?? parsed.relevanceScore >= 50,
-        matchedTopics: parsed.matchedTopics ?? [],
-        relevanceScore: Math.min(100, Math.max(0, parsed.relevanceScore ?? 0)),
-        reasoning: parsed.reasoning ?? "",
-      };
-
-      // Cache the result
-      this.cache.set(cacheKey, { result, timestamp: Date.now() });
-
-      return result;
-    } catch (error) {
-      console.error("[TopicClassifier] Failed to classify:", error);
-      return {
-        market,
-        isRelevant: false,
-        matchedTopics: [],
-        relevanceScore: 0,
-        reasoning: "Failed to classify market",
-      };
     }
+
+    const errorMessage = lastError instanceof Error ? lastError.message : String(lastError);
+    const isRateLimit = this.isRateLimitError(lastError);
+    console.error(`[TopicClassifier] Failed to classify: ${errorMessage}`);
+    
+    return {
+      market,
+      isRelevant: false,
+      matchedTopics: [],
+      relevanceScore: 0,
+      reasoning: isRateLimit ? "Rate limit exceeded - classification unavailable" : "Failed to classify market",
+    };
   }
 
   /**

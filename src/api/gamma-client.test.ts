@@ -178,6 +178,8 @@ describe("GammaApiClient", () => {
 
   describe("normalizeMarket", () => {
     it("should normalize market to unified format", () => {
+      // Data structure matches actual Gamma API response format
+      // outcomes and outcomePrices are separate arrays
       const gammaMarket = {
         id: "market-1",
         question: "Will X happen?",
@@ -189,10 +191,8 @@ describe("GammaApiClient", () => {
         closed: false,
         endDate: "2024-12-31T23:59:59Z",
         clobTokenIds: ["token-yes", "token-no"],
-        outcomes: [
-          { id: "o1", title: "Yes", price: 0.65 },
-          { id: "o2", title: "No", price: 0.35 },
-        ],
+        outcomes: ["Yes", "No"],
+        outcomePrices: [0.65, 0.35],
       };
 
       const normalized = client.normalizeMarket(gammaMarket);

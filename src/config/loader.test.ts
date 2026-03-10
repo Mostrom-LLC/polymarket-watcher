@@ -83,21 +83,21 @@ markets:
 
   describe("loadEnvConfig", () => {
     it("should throw ConfigError when required env vars are missing", () => {
-      vi.stubEnv("ANTHROPIC_API_KEY", "");
+      vi.stubEnv("GEMINI_API_KEY", "");
       vi.stubEnv("SLACK_BOT_TOKEN", "");
 
       expect(() => loadEnvConfig()).toThrow(ConfigError);
     });
 
     it("should load valid env config", () => {
-      vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+      vi.stubEnv("GEMINI_API_KEY", "AIzaSy-test-key");
       vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
       vi.stubEnv("REDIS_URL", "redis://localhost:6380");
       vi.stubEnv("PORT", "4000");
 
       const config = loadEnvConfig();
 
-      expect(config.ANTHROPIC_API_KEY).toBe("sk-ant-test");
+      expect(config.GEMINI_API_KEY).toBe("AIzaSy-test-key");
       expect(config.SLACK_BOT_TOKEN).toBe("xoxb-test");
       expect(config.REDIS_URL).toBe("redis://localhost:6380");
       expect(config.PORT).toBe(4000);
@@ -108,7 +108,7 @@ markets:
       vi.stubEnv("NODE_ENV", undefined as unknown as string);
       vi.stubEnv("LOG_LEVEL", undefined as unknown as string);
       vi.stubEnv("PORT", undefined as unknown as string);
-      vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+      vi.stubEnv("GEMINI_API_KEY", "AIzaSy-test-key");
       vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
 
       const config = loadEnvConfig();
