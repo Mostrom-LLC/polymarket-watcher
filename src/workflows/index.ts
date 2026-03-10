@@ -184,12 +184,24 @@ const monitorTrades = inngest.createFunction(
     let whalesDetected = 0;
 
     // Step 2: Check each market for whale activity
-    for (const market of markets) {
-      // Fetch large trades ($50k+) for each token
+    // Only process markets closing within 24 hours
+    const marketsClosingSoon = markets.filter((market) => {
+      if (!market.endDate) return false;
+      const hoursUntilClose = (market.endDate.getTime() - Date.now()) / (1000 * 60 * 60);
+      return hoursUntilClose > 0 && hoursUntilClose <= 24;
+    });
+
+    if (marketsClosingSoon.length === 0) {
+      console.log("[monitor-trades] No markets closing within 24 hours");
+      return { monitored: markets.length, whalesDetected: 0 };
+    }
+
+    for (const market of marketsClosingSoon) {
+      // Fetch large trades ($10k+) for each token - lowered from $50k per MOS-94
       const largeTradesRaw = await step.run(`fetch-trades-${market.id}`, async () => {
         const allTrades: NormalizedTrade[] = [];
         for (const tokenId of market.tokenIds) {
-          const trades = await clobApi.getLargeTrades(tokenId, 50000, { limit: 20 });
+          const trades = await clobApi.getLargeTrades(tokenId, 10000, { limit: 20 });
           const normalized = trades.map((t) => clobApi.normalizeTrade(t, market.id));
           allTrades.push(...normalized);
         }
@@ -266,66 +278,16 @@ const monitorTrades = inngest.createFunction(
 );
 
 // =============================================================================
-// Close Alert Workflow (every 5 minutes)
+// Close Alert Workflow - DISABLED per MOS-94
 // =============================================================================
-
-/**
- * Check for markets closing soon and send alerts
- * Alerts at T-30 minutes
- */
-const closeAlert = inngest.createFunction(
-  {
-    id: "close-alert",
-    name: "Close Alert",
-  },
-  { cron: "*/5 * * * *" }, // Every 5 minutes
-  async ({ step }) => {
-    const config = getConfig();
-    const cache = new MarketCache(config.env.REDIS_URL);
-    const notifier = new SlackNotifier(
-      config.env.SLACK_BOT_TOKEN,
-      config.env.SLACK_DEFAULT_CHANNEL
-    );
-
-    // Get today's markets
-    const marketsRaw = await step.run("get-today-markets", async () => {
-      return cache.getTodayMarkets();
-    });
-
-    const markets = (marketsRaw as unknown[]).map(hydrateMarket);
-    const alertsSent: string[] = [];
-
-    // Check each market
-    for (const market of markets) {
-      if (!market.endDate) continue;
-
-      const minutesUntilClose = (market.endDate.getTime() - Date.now()) / (1000 * 60);
-
-      // Alert at T-30 minutes (between 25-35 min window to catch it)
-      if (minutesUntilClose > 25 && minutesUntilClose <= 35) {
-        const closeAlertKey = `close-alerted:${market.id}`;
-        const wasAlerted = await step.run(`check-close-alert-${market.id}`, async () => {
-          return cache.wasAlerted(market.id);
-        });
-
-        if (!wasAlerted) {
-          await step.run(`send-close-alert-${market.id}`, async () => {
-            const alert: MarketAlert = {
-              market,
-            };
-            await notifier.sendMarketAlert(alert);
-            // Mark as alerted for 1 hour (won't re-alert)
-            await cache.markAlerted(market.id, 3600);
-          });
-          alertsSent.push(market.id);
-        }
-      }
-    }
-
-    console.log(`[close-alert] Checked ${markets.length} markets, sent ${alertsSent.length} alerts`);
-    return { checked: markets.length, alertsSent: alertsSent.length };
-  }
-);
+// 
+// Standalone close alerts have been removed. All alerts now require whale
+// activity detection ($10k+ bet) on markets closing within 24 hours.
+// Whale alerts are sent by monitorTrades workflow which combines both signals.
+//
+// See MOS-94 for details: alerts should only fire when BOTH conditions are met:
+// 1. Market is closing within 24 hours
+// 2. Whale bet detected (single trade >= $10,000 USD)
 
 // =============================================================================
 // Daily Summary Workflow (9 PM daily)
@@ -405,5 +367,7 @@ const dailySummary = inngest.createFunction(
 
 /**
  * Export all workflow functions for Inngest registration
+ * 
+ * Note: closeAlert was removed per MOS-94 - all alerts now require whale activity
  */
-export const functions = [discoverMarkets, monitorTrades, closeAlert, dailySummary];
+export const functions = [discoverMarkets, monitorTrades, dailySummary];
