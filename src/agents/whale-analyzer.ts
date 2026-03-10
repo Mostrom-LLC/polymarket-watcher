@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
 /**
@@ -17,20 +17,18 @@ export interface WhaleAnalysisResult {
 /**
  * Whale Analyzer Agent
  * 
- * Uses Claude Sonnet to analyze large trade patterns and provide insights.
+ * Uses Gemini to analyze large trade patterns and provide insights.
  */
 export class WhaleAnalyzer {
-  private client: Anthropic;
+  private client: GoogleGenerativeAI;
   private model: string;
-  private maxTokens: number;
 
   constructor(
     apiKey: string,
-    options: { model?: string; maxTokens?: number } = {}
+    options: { model?: string } = {}
   ) {
-    this.client = new Anthropic({ apiKey });
-    this.model = options.model ?? "claude-sonnet-4-20250514";
-    this.maxTokens = options.maxTokens ?? 1024;
+    this.client = new GoogleGenerativeAI(apiKey);
+    this.model = options.model ?? "gemini-2.0-flash";
   }
 
   /**
@@ -96,7 +94,7 @@ Whale Detection Signals to consider:
 - Clustering of large bets
 - Direction consensus
 
-Analyze this activity and respond in JSON:
+Analyze this activity and respond in JSON format only (no markdown code blocks):
 {
   "hasWhaleActivity": true/false,
   "marketLean": "YES" | "NO" | "NEUTRAL",
@@ -106,19 +104,12 @@ Analyze this activity and respond in JSON:
   "reasoning": "Brief explanation of whale patterns and recommendation"
 }`;
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const content = response.content[0];
-    if (!content || content.type !== "text") {
-      throw new Error("Unexpected response type from Claude");
-    }
-
     try {
-      const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+      const model = this.client.getGenerativeModel({ model: this.model });
+      const response = await model.generateContent(prompt);
+      const text = response.response.text();
+
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error("No JSON found in response");
       }
@@ -142,8 +133,7 @@ Analyze this activity and respond in JSON:
         reasoning: parsed.reasoning ?? "Unable to analyze",
       };
     } catch (error) {
-      const errorText = content.type === "text" ? content.text : "unknown";
-      console.error("[WhaleAnalyzer] Failed to parse response:", errorText);
+      console.error("[WhaleAnalyzer] Failed to analyze:", error);
       
       // Return a default analysis based on trade data
       return {

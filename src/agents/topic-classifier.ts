@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { NormalizedMarket } from "../api/types.js";
 
 /**
@@ -23,22 +23,20 @@ interface CacheEntry {
 /**
  * Topic Classifier Agent
  * 
- * Uses Claude Haiku to classify markets by topic relevance.
+ * Uses Gemini to classify markets by topic relevance.
  */
 export class TopicClassifier {
-  private client: Anthropic;
+  private client: GoogleGenerativeAI;
   private model: string;
-  private maxTokens: number;
   private cache: Map<string, CacheEntry> = new Map();
   private cacheTtlMs: number;
 
   constructor(
     apiKey: string,
-    options: { model?: string; maxTokens?: number; cacheTtlMs?: number } = {}
+    options: { model?: string; cacheTtlMs?: number } = {}
   ) {
-    this.client = new Anthropic({ apiKey });
-    this.model = options.model ?? "claude-3-5-haiku-20241022";
-    this.maxTokens = options.maxTokens ?? 512;
+    this.client = new GoogleGenerativeAI(apiKey);
+    this.model = options.model ?? "gemini-2.0-flash";
     this.cacheTtlMs = options.cacheTtlMs ?? 60 * 60 * 1000; // 1 hour default
   }
 
@@ -78,7 +76,7 @@ Current Prices: ${market.outcomePrices.map((p, i) => `${market.outcomes[i]}: ${(
 
 Topics to check: ${topics.join(", ")}
 
-Respond in JSON format:
+Respond in JSON format only (no markdown code blocks):
 {
   "isRelevant": true/false,
   "matchedTopics": ["topic1", "topic2"],
@@ -92,19 +90,12 @@ Rules:
 - relevanceScore: 0-100 based on how clearly the market relates to the topics
 - reasoning: concise explanation`;
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const content = response.content[0];
-    if (!content || content.type !== "text") {
-      throw new Error("Unexpected response type from Claude");
-    }
-
     try {
-      const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+      const model = this.client.getGenerativeModel({ model: this.model });
+      const response = await model.generateContent(prompt);
+      const text = response.response.text();
+
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error("No JSON found in response");
       }
@@ -129,8 +120,7 @@ Rules:
 
       return result;
     } catch (error) {
-      const errorText = content.type === "text" ? content.text : "unknown";
-      console.error("[TopicClassifier] Failed to parse response:", errorText);
+      console.error("[TopicClassifier] Failed to classify:", error);
       return {
         market,
         isRelevant: false,

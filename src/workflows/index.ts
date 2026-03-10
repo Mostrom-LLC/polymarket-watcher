@@ -92,7 +92,7 @@ const discoverMarkets = inngest.createFunction(
     // Initialize services
     const gammaApi = new GammaApiClient();
     const cache = new MarketCache(config.env.REDIS_URL);
-    const classifier = new TopicClassifier(config.env.ANTHROPIC_API_KEY, {
+    const classifier = new TopicClassifier(config.env.GEMINI_API_KEY, {
       model: "claude-3-5-haiku-20241022",
     });
 
@@ -163,7 +163,7 @@ const monitorTrades = inngest.createFunction(
     const config = getConfig();
     const clobApi = new ClobApiClient();
     const cache = new MarketCache(config.env.REDIS_URL);
-    const analyzer = new WhaleAnalyzer(config.env.ANTHROPIC_API_KEY);
+    const analyzer = new WhaleAnalyzer(config.env.GEMINI_API_KEY);
     const notifier = new SlackNotifier(
       config.env.SLACK_BOT_TOKEN,
       config.env.SLACK_DEFAULT_CHANNEL
