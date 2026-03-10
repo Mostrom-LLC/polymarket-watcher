@@ -191,8 +191,11 @@ export class GammaApiClient {
    * Normalize a Gamma market to unified format
    */
   normalizeMarket(market: GammaMarket): NormalizedMarket {
-    const outcomes = market.outcomes?.map((o) => o.title) ?? [];
-    const outcomePrices = market.outcomePrices ?? market.outcomes?.map((o) => o.price) ?? [];
+    // outcomes can be strings (from JSON parse) or objects with title property
+    const outcomes = market.outcomes?.map((o) => 
+      typeof o === "string" ? o : (o as { title?: string }).title ?? ""
+    ) ?? [];
+    const outcomePrices = market.outcomePrices ?? [];
 
     return {
       id: market.id,
