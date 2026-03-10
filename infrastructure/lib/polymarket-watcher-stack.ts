@@ -6,20 +6,13 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as logs from "aws-cdk-lib/aws-logs";
 import { Construct } from "constructs";
+import * as path from "path";
 import * as dotenv from "dotenv";
 dotenv.config();
 
 const environment = process.env.ENVIRONMENT ?? "prod";
 const vpcId = process.env.CDK_DEFAULT_VPC!;
-const secretVariables = [
-  "GEMINI_API_KEY",
-  "SLACK_BOT_TOKEN",
-  "SLACK_APP_TOKEN",
-  "SLACK_CHANNEL_ID",
-  "REDIS_URL",
-  "INNGEST_EVENT_KEY",
-  "INNGEST_SIGNING_KEY",
-];
+const secretVariables = ["GEMINI_API_KEY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL_ID", "REDIS_URL", "INNGEST_EVENT_KEY", "INNGEST_SIGNING_KEY"];
 
 const constructorPrefix = `${environment}-polymarket-watcher`;
 
@@ -66,7 +59,7 @@ export class PolymarketWatcherStack extends cdk.Stack {
     // ==========================================================================
     const cluster = new ecs.Cluster(this, `${constructorPrefix}-cluster`, {
       vpc,
-      containerInsights: true,
+      containerInsightsV2: ecs.ContainerInsights.ENABLED,
       clusterName: "polymarket",
     });
 
@@ -122,7 +115,7 @@ export class PolymarketWatcherStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
-    fargateSecurityGroup.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.tcp(3000), "Allow traffic from within VPC");
+    fargateSecurityGroup.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.tcp(80), "Allow traffic from within VPC");
 
     // ==========================================================================
     // Task Definition
@@ -136,7 +129,9 @@ export class PolymarketWatcherStack extends cdk.Stack {
     });
 
     taskDef.addContainer(`${constructorPrefix}-container`, {
-      image: ecs.ContainerImage.fromAsset("../application"),
+      image: ecs.ContainerImage.fromAsset(path.join(__dirname, "../../application"), {
+        exclude: ["node_modules", "dist", ".env", "cdk.out"],
+      }),
       memoryLimitMiB: 1024,
       cpu: 512,
       essential: true,
@@ -145,11 +140,11 @@ export class PolymarketWatcherStack extends cdk.Stack {
         logGroup,
         multilinePattern: "^(INFO|DEBUG|WARN|ERROR|CRITICAL)",
       }),
-      portMappings: [{ containerPort: 3000, protocol: ecs.Protocol.TCP }],
+      portMappings: [{ containerPort: 80, protocol: ecs.Protocol.TCP }],
       secrets: generateSecrets(secretVariables),
       environment: {
         NODE_ENV: environment,
-        PORT: "3000",
+        PORT: "80",
         LOG_LEVEL: "info",
         CONFIG_PATH: "config/user-config.yaml",
       },
@@ -162,10 +157,10 @@ export class PolymarketWatcherStack extends cdk.Stack {
       cluster,
       taskDefinition: taskDef,
       serviceName: "polymarket-watcher",
-      desiredCount: 1,
+      desiredCount: 0,
       assignPublicIp: false,
       securityGroups: [fargateSecurityGroup],
-      vpcSubnets: { subnets: vpc.privateSubnets },
+      vpcSubnets: { subnets: vpc.privateSubnets, availabilityZones: ["us-east-1a"] },
       healthCheckGracePeriod: cdk.Duration.seconds(60),
       minHealthyPercent: 50,
       maxHealthyPercent: 200,
@@ -173,6 +168,7 @@ export class PolymarketWatcherStack extends cdk.Stack {
     });
 
     service.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    service.node.addDependency(appSecret);
 
     // ==========================================================================
     // Application Load Balancer
@@ -181,12 +177,16 @@ export class PolymarketWatcherStack extends cdk.Stack {
       vpc,
       internetFacing: true,
       loadBalancerName: `polymarket-watcher-${environment}`,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PUBLIC,
+        subnetFilters: [ec2.SubnetFilter.byCidrMask(24)],
+      },
     });
 
     const listener = alb.addListener(`${constructorPrefix}-listener`, { port: 80 });
 
     const targetGroup = new elbv2.ApplicationTargetGroup(this, `${constructorPrefix}-target-group`, {
-      port: 3000,
+      port: 80,
       vpc,
       protocol: elbv2.ApplicationProtocol.HTTP,
       healthCheck: {
