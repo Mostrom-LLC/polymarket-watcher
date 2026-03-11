@@ -1,16 +1,16 @@
 {
   "version": "52.0.0",
   "files": {
-    "298b1a7ec55814a2c2e5ae92c729ff95a9e4dd8f80e22e583093b8b04ddd0454": {
+    "023c9c72278824f86d7b07cacd2a52566ecef0c2af6b020d9d1daf1aacf8ecbb": {
       "displayName": "PolymarketWatcherStack Template",
       "source": {
         "path": "PolymarketWatcherStack.template.json",
         "packaging": "file"
       },
       "destinations": {
-        "366394957699-us-east-1-2ee98457": {
+        "366394957699-us-east-1-6adbe744": {
           "bucketName": "cdk-hnb659fds-assets-366394957699-us-east-1",
-          "objectKey": "298b1a7ec55814a2c2e5ae92c729ff95a9e4dd8f80e22e583093b8b04ddd0454.json",
+          "objectKey": "023c9c72278824f86d7b07cacd2a52566ecef0c2af6b020d9d1daf1aacf8ecbb.json",
           "region": "us-east-1",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::366394957699:role/cdk-hnb659fds-file-publishing-role-366394957699-us-east-1"
         }
@@ -18,15 +18,15 @@
     }
   },
   "dockerImages": {
-    "8bc949fb1088fc1ce555c89a0bd507802e7a4532a553cfa8b7395268ad6f1245": {
+    "f6a126e09b7a1e2c07927581a944758a2dcbdc42c4bd871244f5ad9dbb49dacc": {
       "displayName": "prod-polymarket-watcher-task-definition/prod-polymarket-watcher-container/AssetImage",
       "source": {
-        "directory": "asset.8bc949fb1088fc1ce555c89a0bd507802e7a4532a553cfa8b7395268ad6f1245"
+        "directory": "asset.f6a126e09b7a1e2c07927581a944758a2dcbdc42c4bd871244f5ad9dbb49dacc"
       },
       "destinations": {
-        "366394957699-us-east-1-e2cd0fee": {
+        "366394957699-us-east-1-35c22eb0": {
           "repositoryName": "cdk-hnb659fds-container-assets-366394957699-us-east-1",
-          "imageTag": "8bc949fb1088fc1ce555c89a0bd507802e7a4532a553cfa8b7395268ad6f1245",
+          "imageTag": "f6a126e09b7a1e2c07927581a944758a2dcbdc42c4bd871244f5ad9dbb49dacc",
           "region": "us-east-1",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::366394957699:role/cdk-hnb659fds-image-publishing-role-366394957699-us-east-1"
         }
