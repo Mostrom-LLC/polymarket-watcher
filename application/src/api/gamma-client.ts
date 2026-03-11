@@ -175,7 +175,7 @@ export class GammaApiClient {
   /**
    * Get markets closing within a time window
    */
-  async getMarketsClosingSoon(hoursFromNow: number = 24): Promise<GammaMarket[]> {
+  async getMarketsClosingSoon(hoursFromNow: number = 48): Promise<GammaMarket[]> {
     const markets = await this.getMarkets({ active: true, closed: false });
     const now = new Date();
     const cutoff = new Date(now.getTime() + hoursFromNow * 60 * 60 * 1000);

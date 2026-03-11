@@ -164,11 +164,15 @@ describe("SlackNotifier", () => {
       const recommendationBlock = payload.blocks.find((block) =>
         block.type === "section" && block.text?.text.includes("Vote YES")
       );
+      const closesField = detailFields.find((field) => field.text.includes("*Closes:*"));
+      const timeLeftField = detailFields.find((field) => field.text.includes("*Time Left:*"));
 
       expect(payload.text).toContain("WHALE ALERT");
       expect(headerBlock?.text?.text).toContain("WHALE ALERT — Market Closing Soon");
       expect(detailFields.some((field) => field.text.includes("Whale Bet"))).toBe(true);
       expect(detailFields.some((field) => field.text.includes("Current Odds"))).toBe(true);
+      expect(closesField?.text).toMatch(/\*Closes:\*\n[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} [AP]M [A-Z]{2,4}/);
+      expect(timeLeftField?.text).toContain("*Time Left:*");
       expect(recommendationBlock?.text?.text).toContain("High confidence");
     });
 

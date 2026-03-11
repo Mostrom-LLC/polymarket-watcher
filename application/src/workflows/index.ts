@@ -2,9 +2,9 @@ import { Inngest } from "inngest";
 import { GammaApiClient } from "../api/gamma-client.js";
 import { ClobApiClient } from "../api/clob-client.js";
 import { MarketCache } from "../cache/redis.js";
-import { TopicClassifier } from "../agents/topic-classifier.js";
+import { batchClassifyMarkets } from "../agents/topic-classifier.js";
 import { MarketRecommender, type MarketVoteRecommendation } from "../agents/market-recommender.js";
-import { WhaleAnalyzer } from "../agents/whale-analyzer.js";
+import { analyzeWhaleTrades } from "../agents/whale-analyzer.js";
 import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary } from "../notifications/slack.js";
 import { getConfig } from "../config/loader.js";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
@@ -18,6 +18,7 @@ export const inngest = new Inngest({
 });
 
 export const WHALE_THRESHOLD_USD = 10000;
+export const MARKET_CLOSE_WINDOW_HOURS = 48;
 
 // =============================================================================
 // Helper Functions
@@ -117,16 +118,11 @@ const discoverMarkets = inngest.createFunction(
     // Initialize services
     const gammaApi = new GammaApiClient();
     const cache = new MarketCache(config.env.REDIS_URL);
-    const classifier = new TopicClassifier(config.env.GEMINI_API_KEY, {
-      model: config.user.ai.model,
-      maxTokens: config.user.ai.maxTokens,
-      temperature: config.user.ai.temperature,
-    });
 
-    // Step 1: Fetch markets closing in next 24 hours
+    // Step 1: Fetch markets closing in next 48 hours
     const marketsRaw = await step.run("fetch-closing-markets", async () => {
-      const closingSoon = await gammaApi.getMarketsClosingSoon(24);
-      console.log(`[discover-markets] Found ${closingSoon.length} markets closing in 24h`);
+      const closingSoon = await gammaApi.getMarketsClosingSoon(MARKET_CLOSE_WINDOW_HOURS);
+      console.log(`[discover-markets] Found ${closingSoon.length} markets closing in ${MARKET_CLOSE_WINDOW_HOURS}h`);
       return closingSoon.map((m) => gammaApi.normalizeMarket(m));
     });
 
@@ -134,7 +130,7 @@ const discoverMarkets = inngest.createFunction(
     const markets = (marketsRaw as unknown[]).map(hydrateMarket);
 
     if (markets.length === 0) {
-      console.log("[discover-markets] No markets found closing in 24h");
+      console.log(`[discover-markets] No markets found closing in ${MARKET_CLOSE_WINDOW_HOURS}h`);
       return { scanned: 0, matched: 0 };
     }
 
@@ -152,7 +148,12 @@ const discoverMarkets = inngest.createFunction(
 
     // Step 3: Classify markets by topics (using batchClassify)
     const classificationResults = await step.run("classify-markets", async () => {
-      const results = await classifier.batchClassify(markets, topics);
+      const results = await batchClassifyMarkets(markets, topics, {
+        apiKey: config.env.GEMINI_API_KEY,
+        model: config.user.ai.model,
+        maxTokens: config.user.ai.maxTokens,
+        temperature: config.user.ai.temperature,
+      });
       const relevant = results.filter((r) => r.isRelevant && r.relevanceScore >= 60);
       console.log(`[discover-markets] ${relevant.length}/${markets.length} markets match topics`);
       return relevant.map((r) => r.market);
@@ -195,11 +196,6 @@ const monitorTrades = inngest.createFunction(
       maxTokens: config.user.ai.maxTokens,
       temperature: config.user.ai.temperature,
     });
-    const analyzer = new WhaleAnalyzer(config.env.GEMINI_API_KEY, {
-      model: config.user.ai.model,
-      maxTokens: config.user.ai.maxTokens,
-      temperature: config.user.ai.temperature,
-    });
     const notifier = new SlackNotifier(
       config.env.SLACK_BOT_TOKEN,
       config.env.SLACK_DEFAULT_CHANNEL
@@ -221,7 +217,7 @@ const monitorTrades = inngest.createFunction(
 
     // Step 2: Check each market for whale activity
     for (const market of markets) {
-      if (!closesWithinHours(market, 24)) {
+      if (!closesWithinHours(market, MARKET_CLOSE_WINDOW_HOURS)) {
         continue;
       }
 
@@ -273,7 +269,12 @@ const monitorTrades = inngest.createFunction(
 
       // Run AI analysis on whale activity (using analyzeTrades)
       const analysisRaw = await step.run(`analyze-whales-${market.id}`, async () => {
-        return analyzer.analyzeTrades(market, newTrades);
+        return analyzeWhaleTrades(market, newTrades, {
+          apiKey: config.env.GEMINI_API_KEY,
+          model: config.user.ai.model,
+          maxTokens: config.user.ai.maxTokens,
+          temperature: config.user.ai.temperature,
+        });
       });
 
       // Hydrate analysis (Date objects from JSON)

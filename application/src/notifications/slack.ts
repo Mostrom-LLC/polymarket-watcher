@@ -266,6 +266,9 @@ export class SlackNotifier {
     const timeUntilClose = market.endDate 
       ? this.formatTimeUntil(market.endDate) 
       : "Unknown";
+    const closeDateTime = market.endDate
+      ? this.formatCloseDateTime(market.endDate)
+      : "Unknown";
     const oddsText = market.outcomes
       .map((outcome, index) => `${outcome} ${((market.outcomePrices[index] ?? 0) * 100).toFixed(0)}%`)
       .join(" / ");
@@ -294,7 +297,7 @@ export class SlackNotifier {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `*${market.question}*\n⏰ Closes in: ${timeUntilClose}`,
+          text: `*${market.question}*`,
         },
       },
       {
@@ -315,6 +318,14 @@ export class SlackNotifier {
           {
             type: "mrkdwn",
             text: `*Placed:*\n${this.formatTimeAgo(trade.timestamp)}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Closes:*\n${closeDateTime}`,
+          },
+          {
+            type: "mrkdwn",
+            text: `*Time Left:*\n${timeUntilClose}`,
           },
         ],
       },
@@ -611,6 +622,17 @@ export class SlackNotifier {
       const diffDays = Math.floor(diffHours / 24);
       return `${diffDays} days ago`;
     }
+  }
+
+  private formatCloseDateTime(date: Date): string {
+    return new Intl.DateTimeFormat("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(date);
   }
 
   private formatConfidence(confidence: "HIGH" | "MEDIUM" | "LOW"): string {

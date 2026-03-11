@@ -1,6 +1,7 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { z } from "zod";
 import type { NormalizedMarket } from "../api/types.js";
+import { getGeminiClient } from "./gemini-client.js";
 
 const classificationPayloadSchema = z.object({
   isRelevant: z.boolean().optional(),
@@ -55,59 +56,58 @@ interface CacheEntry {
   timestamp: number;
 }
 
-/**
- * Topic Classifier Agent
- * 
- * Uses Gemini to classify markets by topic relevance.
- */
-export class TopicClassifier {
-  private client: GoogleGenAI;
-  private model: string;
-  private maxTokens: number;
-  private temperature: number;
-  private cache: Map<string, CacheEntry> = new Map();
-  private cacheTtlMs: number;
+export interface TopicClassifierOptions {
+  apiKey: string;
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  cacheTtlMs?: number;
+}
 
-  constructor(
-    apiKey: string,
-    options: { model?: string; maxTokens?: number; temperature?: number; cacheTtlMs?: number } = {}
-  ) {
-    this.client = new GoogleGenAI({ apiKey });
-    this.model = options.model ?? "gemini-2.5-flash";
-    this.maxTokens = options.maxTokens ?? 512;
-    this.temperature = options.temperature ?? 0.3;
-    this.cacheTtlMs = options.cacheTtlMs ?? 60 * 60 * 1000; // 1 hour default
+interface ResolvedTopicClassifierOptions {
+  apiKey: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  cacheTtlMs: number;
+}
+
+const topicClassificationCache = new Map<string, CacheEntry>();
+
+function resolveTopicClassifierOptions(
+  options: TopicClassifierOptions
+): ResolvedTopicClassifierOptions {
+  return {
+    apiKey: options.apiKey,
+    model: options.model ?? "gemini-2.5-flash",
+    maxTokens: options.maxTokens ?? 512,
+    temperature: options.temperature ?? 0.3,
+    cacheTtlMs: options.cacheTtlMs ?? 60 * 60 * 1000,
+  };
+}
+
+function getCacheKey(marketId: string, topics: string[]): string {
+  return `${marketId}:${[...topics].sort().join(",")}`;
+}
+
+function isCacheValid(entry: CacheEntry, cacheTtlMs: number): boolean {
+  return Date.now() - entry.timestamp < cacheTtlMs;
+}
+
+export async function classifyMarket(
+  market: NormalizedMarket,
+  topics: string[],
+  options: TopicClassifierOptions
+): Promise<ClassificationResult> {
+  const resolvedOptions = resolveTopicClassifierOptions(options);
+  const cacheKey = getCacheKey(market.id, topics);
+  const cachedEntry = topicClassificationCache.get(cacheKey);
+
+  if (cachedEntry && isCacheValid(cachedEntry, resolvedOptions.cacheTtlMs)) {
+    return cachedEntry.result;
   }
 
-  /**
-   * Get cache key for a market/topics combination
-   */
-  private getCacheKey(marketId: string, topics: string[]): string {
-    return `${marketId}:${topics.sort().join(",")}`;
-  }
-
-  /**
-   * Check if cache entry is valid
-   */
-  private isCacheValid(entry: CacheEntry): boolean {
-    return Date.now() - entry.timestamp < this.cacheTtlMs;
-  }
-
-  /**
-   * Classify a single market against topics
-   */
-  async classifyMarket(
-    market: NormalizedMarket,
-    topics: string[]
-  ): Promise<ClassificationResult> {
-    // Check cache first
-    const cacheKey = this.getCacheKey(market.id, topics);
-    const cached = this.cache.get(cacheKey);
-    if (cached && this.isCacheValid(cached)) {
-      return cached.result;
-    }
-
-    const prompt = `You are a market classification expert. Analyze this prediction market and determine its relevance to the given topics.
+  const prompt = `You are a market classification expert. Analyze this prediction market and determine its relevance to the given topics.
 
 Market Question: ${market.question}
 Outcomes: ${market.outcomes.join(", ")}
@@ -129,97 +129,85 @@ Rules:
 - relevanceScore: 0-100 based on how clearly the market relates to the topics
 - reasoning: concise explanation`;
 
-    const response = await this.client.models.generateContent({
-      model: this.model,
-      contents: prompt,
-      config: {
-        maxOutputTokens: this.maxTokens,
-        temperature: this.temperature,
-        responseMimeType: "application/json",
-        responseSchema: classificationResponseSchema,
-      },
-    });
+  const response = await getGeminiClient(resolvedOptions.apiKey).models.generateContent({
+    model: resolvedOptions.model,
+    contents: prompt,
+    config: {
+      maxOutputTokens: resolvedOptions.maxTokens,
+      temperature: resolvedOptions.temperature,
+      responseMimeType: "application/json",
+      responseSchema: classificationResponseSchema,
+    },
+  });
 
-    try {
-      const parsed = parseClassificationPayload(response.text ?? "");
-      const relevanceScore = Math.min(100, Math.max(0, parsed.relevanceScore ?? 0));
+  try {
+    const parsed = parseClassificationPayload(response.text ?? "");
+    const relevanceScore = Math.min(100, Math.max(0, parsed.relevanceScore ?? 0));
 
-      const result: ClassificationResult = {
-        market,
-        isRelevant: parsed.isRelevant ?? relevanceScore >= 50,
-        matchedTopics: parsed.matchedTopics ?? [],
-        relevanceScore,
-        reasoning: parsed.reasoning ?? "",
-      };
+    const result: ClassificationResult = {
+      market,
+      isRelevant: parsed.isRelevant ?? relevanceScore >= 50,
+      matchedTopics: parsed.matchedTopics ?? [],
+      relevanceScore,
+      reasoning: parsed.reasoning ?? "",
+    };
 
-      // Cache the result
-      this.cache.set(cacheKey, { result, timestamp: Date.now() });
+    topicClassificationCache.set(cacheKey, { result, timestamp: Date.now() });
+    return result;
+  } catch {
+    console.error("[TopicClassifier] Failed to parse response:", response.text ?? "unknown");
+    return {
+      market,
+      isRelevant: false,
+      matchedTopics: [],
+      relevanceScore: 0,
+      reasoning: "Failed to classify market",
+    };
+  }
+}
 
-      return result;
-    } catch (error) {
-      console.error("[TopicClassifier] Failed to parse response:", response.text ?? "unknown");
-      return {
-        market,
-        isRelevant: false,
-        matchedTopics: [],
-        relevanceScore: 0,
-        reasoning: "Failed to classify market",
-      };
+export async function batchClassifyMarkets(
+  markets: NormalizedMarket[],
+  topics: string[],
+  options: TopicClassifierOptions
+): Promise<ClassificationResult[]> {
+  const results: ClassificationResult[] = [];
+
+  for (const market of markets) {
+    results.push(await classifyMarket(market, topics, options));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  return results;
+}
+
+export async function filterMarketsByTopics(
+  markets: NormalizedMarket[],
+  topics: string[],
+  options: TopicClassifierOptions,
+  minScore: number = 50
+): Promise<NormalizedMarket[]> {
+  const results = await batchClassifyMarkets(markets, topics, options);
+
+  return results
+    .filter((result) => result.isRelevant && result.relevanceScore >= minScore)
+    .map((result) => result.market);
+}
+
+export function clearTopicClassificationCache(): void {
+  topicClassificationCache.clear();
+}
+
+export function getTopicClassificationCacheStats(cacheTtlMs: number = 60 * 60 * 1000): {
+  size: number;
+  validEntries: number;
+} {
+  let validEntries = 0;
+  for (const entry of topicClassificationCache.values()) {
+    if (isCacheValid(entry, cacheTtlMs)) {
+      validEntries++;
     }
   }
 
-  /**
-   * Batch classify multiple markets
-   */
-  async batchClassify(
-    markets: NormalizedMarket[],
-    topics: string[]
-  ): Promise<ClassificationResult[]> {
-    const results: ClassificationResult[] = [];
-
-    for (const market of markets) {
-      const result = await this.classifyMarket(market, topics);
-      results.push(result);
-      
-      // Small delay to avoid rate limits
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-
-    return results;
-  }
-
-  /**
-   * Filter markets that match any of the given topics
-   */
-  async filterByTopics(
-    markets: NormalizedMarket[],
-    topics: string[],
-    minScore: number = 50
-  ): Promise<NormalizedMarket[]> {
-    const results = await this.batchClassify(markets, topics);
-
-    return results
-      .filter((r) => r.isRelevant && r.relevanceScore >= minScore)
-      .map((r) => r.market);
-  }
-
-  /**
-   * Clear the cache
-   */
-  clearCache(): void {
-    this.cache.clear();
-  }
-
-  /**
-   * Get cache stats
-   */
-  getCacheStats(): { size: number; validEntries: number } {
-    let validEntries = 0;
-    for (const entry of this.cache.values()) {
-      if (this.isCacheValid(entry)) {
-        validEntries++;
-      }
-    }
-    return { size: this.cache.size, validEntries };
-  }
+  return { size: topicClassificationCache.size, validEntries };
 }
