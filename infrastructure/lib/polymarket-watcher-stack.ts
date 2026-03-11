@@ -2,17 +2,18 @@ import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as iam from "aws-cdk-lib/aws-iam";
-import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as logs from "aws-cdk-lib/aws-logs";
+import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 import { Construct } from "constructs";
 import * as path from "path";
 import * as dotenv from "dotenv";
 dotenv.config();
+dotenv.config({ path: path.join(__dirname, "../../application/.env"), override: false });
 
 const environment = process.env.ENVIRONMENT ?? "prod";
 const vpcId = process.env.CDK_DEFAULT_VPC!;
-const secretVariables = ["GEMINI_API_KEY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL_ID", "REDIS_URL", "INNGEST_EVENT_KEY", "INNGEST_SIGNING_KEY"];
+const secretVariables = ["GEMINI_API_KEY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL_ID", "REDIS_URL"];
 
 const constructorPrefix = `${environment}-polymarket-watcher`;
 
@@ -35,13 +36,11 @@ export class PolymarketWatcherStack extends cdk.Stack {
       secretName: "polymarket-watcher",
       description: `Environment variables for polymarket-watcher (${environment})`,
       secretObjectValue: {
-        GEMINI_API_KEY: cdk.SecretValue.unsafePlainText(""),
-        SLACK_BOT_TOKEN: cdk.SecretValue.unsafePlainText(""),
-        SLACK_APP_TOKEN: cdk.SecretValue.unsafePlainText(""),
-        SLACK_CHANNEL_ID: cdk.SecretValue.unsafePlainText(""),
-        REDIS_URL: cdk.SecretValue.unsafePlainText(""),
-        INNGEST_EVENT_KEY: cdk.SecretValue.unsafePlainText(""),
-        INNGEST_SIGNING_KEY: cdk.SecretValue.unsafePlainText(""),
+        GEMINI_API_KEY: cdk.SecretValue.unsafePlainText(process.env.GEMINI_API_KEY ?? ""),
+        SLACK_BOT_TOKEN: cdk.SecretValue.unsafePlainText(process.env.SLACK_BOT_TOKEN ?? ""),
+        SLACK_APP_TOKEN: cdk.SecretValue.unsafePlainText(process.env.SLACK_APP_TOKEN ?? ""),
+        SLACK_CHANNEL_ID: cdk.SecretValue.unsafePlainText(process.env.SLACK_CHANNEL_ID ?? ""),
+        REDIS_URL: cdk.SecretValue.unsafePlainText(process.env.REDIS_URL ?? ""),
       },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -68,6 +67,12 @@ export class PolymarketWatcherStack extends cdk.Stack {
     // ==========================================================================
     const logGroup = new logs.LogGroup(this, `${constructorPrefix}-log-group`, {
       logGroupName: `/ecs/polymarket-watcher/${environment}`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const inngestLogGroup = new logs.LogGroup(this, `${constructorPrefix}-inngest-log-group`, {
+      logGroupName: `/ecs/polymarket-watcher/${environment}/inngest`,
       retention: logs.RetentionDays.TWO_WEEKS,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -115,7 +120,7 @@ export class PolymarketWatcherStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
-    fargateSecurityGroup.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.tcp(80), "Allow traffic from within VPC");
+    fargateSecurityGroup.addIngressRule(fargateSecurityGroup, ec2.Port.tcp(8288), "Allow Inngest sidecar within task");
 
     // ==========================================================================
     // Task Definition
@@ -124,16 +129,18 @@ export class PolymarketWatcherStack extends cdk.Stack {
       family: "polymarket-watcher",
       executionRole: role,
       taskRole: role,
-      memoryLimitMiB: 1024,
+      memoryLimitMiB: 2048,
       cpu: 512,
     });
 
+    // Main application container
     taskDef.addContainer(`${constructorPrefix}-container`, {
       image: ecs.ContainerImage.fromAsset(path.join(__dirname, "../../application"), {
         exclude: ["node_modules", "dist", ".env", "cdk.out"],
+        platform: Platform.LINUX_AMD64,
       }),
       memoryLimitMiB: 1024,
-      cpu: 512,
+      cpu: 256,
       essential: true,
       logging: new ecs.AwsLogDriver({
         streamPrefix: "ecs",
@@ -143,11 +150,27 @@ export class PolymarketWatcherStack extends cdk.Stack {
       portMappings: [{ containerPort: 80, protocol: ecs.Protocol.TCP }],
       secrets: generateSecrets(secretVariables),
       environment: {
-        NODE_ENV: environment,
+        NODE_ENV: environment === "prod" ? "production" : environment,
         PORT: "80",
         LOG_LEVEL: "info",
         CONFIG_PATH: "config/user-config.yaml",
+        INNGEST_DEV: "1",
+        INNGEST_BASE_URL: "http://localhost:8288",
       },
+    });
+
+    // Inngest dev server sidecar
+    taskDef.addContainer(`${constructorPrefix}-inngest-sidecar`, {
+      image: ecs.ContainerImage.fromRegistry("public.ecr.aws/mostrom/inngest:latest"),
+      memoryLimitMiB: 512,
+      cpu: 256,
+      essential: false,
+      command: ["inngest", "dev", "-u", "http://localhost/api/inngest"],
+      logging: new ecs.AwsLogDriver({
+        streamPrefix: "ecs",
+        logGroup: inngestLogGroup,
+      }),
+      portMappings: [{ containerPort: 8288, protocol: ecs.Protocol.TCP }],
     });
 
     // ==========================================================================
@@ -156,52 +179,18 @@ export class PolymarketWatcherStack extends cdk.Stack {
     const service = new ecs.FargateService(this, `${constructorPrefix}-fargate-service`, {
       cluster,
       taskDefinition: taskDef,
-      serviceName: "polymarket-watcher",
-      desiredCount: 0,
+      serviceName: "polymarket-watcher-svc",
+      desiredCount: 1,
       assignPublicIp: false,
       securityGroups: [fargateSecurityGroup],
       vpcSubnets: { subnets: vpc.privateSubnets, availabilityZones: ["us-east-1a"] },
-      healthCheckGracePeriod: cdk.Duration.seconds(60),
       minHealthyPercent: 50,
       maxHealthyPercent: 200,
-      circuitBreaker: { rollback: true },
+      circuitBreaker: { rollback: false },
     });
 
     service.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     service.node.addDependency(appSecret);
-
-    // ==========================================================================
-    // Application Load Balancer
-    // ==========================================================================
-    const alb = new elbv2.ApplicationLoadBalancer(this, `${constructorPrefix}-alb`, {
-      vpc,
-      internetFacing: true,
-      loadBalancerName: `polymarket-watcher-${environment}`,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PUBLIC,
-        subnetFilters: [ec2.SubnetFilter.byCidrMask(24)],
-      },
-    });
-
-    const listener = alb.addListener(`${constructorPrefix}-listener`, { port: 80 });
-
-    const targetGroup = new elbv2.ApplicationTargetGroup(this, `${constructorPrefix}-target-group`, {
-      port: 80,
-      vpc,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      healthCheck: {
-        interval: cdk.Duration.seconds(30),
-        path: "/health",
-        healthyHttpCodes: "200",
-        timeout: cdk.Duration.seconds(10),
-        unhealthyThresholdCount: 3,
-        healthyThresholdCount: 2,
-      },
-      targets: [service],
-      deregistrationDelay: cdk.Duration.seconds(10),
-    });
-
-    listener.addTargetGroups(`${constructorPrefix}-tg`, { targetGroups: [targetGroup] });
 
     // ==========================================================================
     // CloudWatch Alarms
@@ -225,21 +214,6 @@ export class PolymarketWatcherStack extends cdk.Stack {
     // ==========================================================================
     // Outputs
     // ==========================================================================
-    new cdk.CfnOutput(this, "ServiceUrl", {
-      value: `http://${alb.loadBalancerDnsName}`,
-      description: "Load balancer URL",
-    });
-
-    new cdk.CfnOutput(this, "HealthCheckUrl", {
-      value: `http://${alb.loadBalancerDnsName}/health`,
-      description: "Health check endpoint",
-    });
-
-    new cdk.CfnOutput(this, "InngestUrl", {
-      value: `http://${alb.loadBalancerDnsName}/api/inngest`,
-      description: "Inngest webhook endpoint",
-    });
-
     new cdk.CfnOutput(this, "LogGroupName", {
       value: logGroup.logGroupName,
       description: "CloudWatch log group",

@@ -1,10 +1,23 @@
 # Polymarket Watcher User Configuration
-# This file defines which markets to watch and how to analyze them
+# This file defines which market categories/topics to watch and how to analyze them
 
-# Markets to monitor
+# Topics to monitor
 markets:
-  # Example: Monitor a specific market by slug
-  - slug: "will-trump-win-2024"
+  # Note: "slug" currently behaves like a topic/category keyword, not an exact Polymarket market slug.
+  # The discovery workflow fetches many closing-soon markets and uses Gemini to match them to these topics.
+  - slug: "trump"
+    enabled: true
+  - slug: "geopolitics"
+    enabled: true
+  - slug: "us politics"
+    enabled: true
+  - slug: "middle east"
+    enabled: true
+  - slug: "tariffs"
+    enabled: true
+  - slug: "iran"
+    enabled: true
+  - slug: "trade war"
     enabled: true
     # Alert thresholds
     thresholds:

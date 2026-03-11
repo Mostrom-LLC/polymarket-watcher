@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WebClient } from "@slack/web-api";
 import { MarketRecommender } from "../agents/market-recommender.js";
-import { WhaleAnalyzer } from "../agents/whale-analyzer.js";
+import { analyzeWhaleTrades } from "../agents/whale-analyzer.js";
 import { SlackNotifier } from "./slack.js";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
@@ -11,8 +11,8 @@ const slackTestChannel = process.env.SLACK_TEST_CHANNEL ?? process.env.SLACK_CHA
 
 const sampleMarket: NormalizedMarket = {
   id: "market-alert-1",
-  question: "Will Bitcoin trade above $100,000 by December 31, 2026?",
-  slug: "bitcoin-100k-2026",
+  question: "Will Bitcoin close above $90,000 by tomorrow night?",
+  slug: "bitcoin-90k-tomorrow",
   outcomes: ["Yes", "No"],
   outcomePrices: [0.68, 0.32],
   volume: 2400000,
@@ -64,9 +64,6 @@ describe.skipIf(!geminiApiKey || !slackBotToken || !slackTestChannel)("Market al
     const recommender = new MarketRecommender(geminiApiKey!, {
       model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
     });
-    const analyzer = new WhaleAnalyzer(geminiApiKey!, {
-      model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
-    });
     const notifier = new SlackNotifier(slackBotToken!, slackTestChannel!);
     const slackClient = new WebClient(slackBotToken!);
 
@@ -74,7 +71,10 @@ describe.skipIf(!geminiApiKey || !slackBotToken || !slackTestChannel)("Market al
       // Some channels cannot be joined explicitly; posting will prove membership either way.
     });
 
-    const analysis = await analyzer.analyzeTrades(sampleMarket, sampleTrades);
+    const analysis = await analyzeWhaleTrades(sampleMarket, sampleTrades, {
+      apiKey: geminiApiKey!,
+      model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+    });
     const recommendation = await recommender.recommendVote(sampleMarket, sampleTrades);
 
     const result = await notifier.sendWhaleAlert(

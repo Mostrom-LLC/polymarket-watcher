@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TopicClassifier } from "./topic-classifier.js";
-import { WhaleAnalyzer } from "./whale-analyzer.js";
+import { classifyMarket } from "./topic-classifier.js";
+import { analyzeWhaleTrades } from "./whale-analyzer.js";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -57,12 +57,11 @@ const sampleTrades: NormalizedTrade[] = [
 
 describe.skipIf(!geminiApiKey)("Gemini integration", () => {
   it("classifies a market with a real Gemini API call", async () => {
-    const classifier = new TopicClassifier(geminiApiKey!, {
+    const result = await classifyMarket(sampleMarket, ["bitcoin", "crypto"], {
+      apiKey: geminiApiKey!,
       cacheTtlMs: 0,
       model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
     });
-
-    const result = await classifier.classifyMarket(sampleMarket, ["bitcoin", "crypto"]);
 
     expect(result.market.id).toBe(sampleMarket.id);
     expect(result.isRelevant).toBe(true);
@@ -71,11 +70,10 @@ describe.skipIf(!geminiApiKey)("Gemini integration", () => {
   }, 30000);
 
   it("analyzes whale trades with a real Gemini API call", async () => {
-    const analyzer = new WhaleAnalyzer(geminiApiKey!, {
+    const result = await analyzeWhaleTrades(sampleMarket, sampleTrades, {
+      apiKey: geminiApiKey!,
       model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
     });
-
-    const result = await analyzer.analyzeTrades(sampleMarket, sampleTrades);
 
     expect(result.largestBets).toHaveLength(3);
     expect(result.hasWhaleActivity).toBe(true);
