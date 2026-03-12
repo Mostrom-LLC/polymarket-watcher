@@ -3,6 +3,7 @@ import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary, ty
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 import type { MarketVoteRecommendation } from "../agents/market-recommender.js";
 import type { WhaleAnalysisResult } from "../agents/whale-analyzer.js";
+import type { AnalystAlert } from "../surveillance/alert-pipeline.js";
 
 // Mock @slack/web-api
 vi.mock("@slack/web-api", () => {
@@ -157,7 +158,7 @@ describe("SlackNotifier", () => {
       expect(mockPostMessage).toHaveBeenCalledTimes(1);
       const payload = mockPostMessage.mock.calls[0]?.[0] as {
         text: string;
-        blocks: Array<{ type: string; text?: { text: string }; fields?: Array<{ text: string }> }>;
+        blocks: Array<{ type: string; text?: { text: string }; fields?: Array<{ text: string }>; elements?: Array<{ url?: string }> }>;
       };
       const headerBlock = payload.blocks[0];
       const detailFields = payload.blocks.find((block) => Array.isArray(block.fields))?.fields ?? [];
@@ -166,6 +167,7 @@ describe("SlackNotifier", () => {
       );
       const closesField = detailFields.find((field) => field.text.includes("*Closes:*"));
       const timeLeftField = detailFields.find((field) => field.text.includes("*Time Left:*"));
+      const actionBlock = payload.blocks.find((block) => block.type === "actions");
 
       expect(payload.text).toContain("WHALE ALERT");
       expect(headerBlock?.text?.text).toContain("WHALE ALERT — Market Closing Soon");
@@ -174,6 +176,7 @@ describe("SlackNotifier", () => {
       expect(closesField?.text).toMatch(/\*Closes:\*\n[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} [AP]M [A-Z]{2,4}/);
       expect(timeLeftField?.text).toContain("*Time Left:*");
       expect(recommendationBlock?.text?.text).toContain("High confidence");
+      expect(actionBlock?.elements?.[0]?.url).toBe("https://polymarket.com/event/bitcoin-100k-march");
     });
 
     it("should handle alert without trader info", async () => {
@@ -223,6 +226,87 @@ describe("SlackNotifier", () => {
       const result = await notifier.sendDailySummary(summary);
 
       expect(result).not.toBeNull();
+    });
+  });
+
+  describe("sendAnalystAlert", () => {
+    it("should send an analyst-facing surveillance alert", async () => {
+      const alert: AnalystAlert = {
+        fingerprint: "military-action-against-iran-ends-on:adjacent_bucket_spike:march-21,march-22",
+        verdict: "escalated",
+        summary: "Military action against Iran ends on...?: adjacent_bucket_spike impacting 2 contracts",
+        familySlug: "military-action-against-iran-ends-on",
+        familyTitle: "Military action against Iran ends on...?",
+        classification: "grouped_exact_date",
+        anomalyPattern: "adjacent_bucket_spike",
+        anomalySeverity: "high",
+        marketLabel: "Military action against Iran ends on Mar 21",
+        direction: "Heavy YES buying",
+        priceMove: {
+          fromPrice: 0.28,
+          toPrice: 0.39,
+          deltaPoints: 0.11,
+        },
+        largestTrade: {
+          wallet: "0xaaa",
+          childSlug: "military-action-against-iran-ends-on-march-21-2026",
+          notionalUsd: 48000,
+          direction: "YES",
+          price: 0.31,
+          walletAgeMinutes: 120,
+        },
+        recommendation: "Lean YES",
+        topWallets: [
+          {
+            wallet: "0xaaa",
+            childSlug: "military-action-against-iran-ends-on-march-21-2026",
+            score: 92,
+            band: "high",
+            reasons: ["new or low-history wallet", "short lead time to catalyst"],
+            priorActivityCount: 0,
+            repeatedPreEventWins: 2,
+            realizedPnlUsd: 180000,
+            currentExposureUsd: 120000,
+            tradeDirection: "YES",
+            tradePrice: 0.31,
+            largestTradeUsd: 48000,
+            walletAgeMinutes: 120,
+          },
+        ],
+        clusterCount: 1,
+        evidence: ["timestamp source: official_source", "adjacent thresholds moved together"],
+        generatedAt: new Date("2026-03-12T12:20:00Z"),
+      };
+
+      const result = await notifier.sendAnalystAlert(alert);
+
+      expect(result).not.toBeNull();
+      expect(result?.ok).toBe(true);
+      expect(mockPostMessage).toHaveBeenCalledTimes(1);
+      const payload = mockPostMessage.mock.calls[0]?.[0] as {
+        text: string;
+        blocks: Array<{ type: string; text?: { text: string }; elements?: Array<{ url?: string }> }>;
+      };
+      const headerBlock = payload.blocks[0];
+      const marketBlock = payload.blocks.find((block) => block.type === "section" && block.text?.text.includes("*Market*"));
+      const directionBlock = payload.blocks.find((block) => block.type === "section" && block.text?.text.includes("*Direction*"));
+      const priceBlock = payload.blocks.find((block) => block.type === "section" && block.text?.text.includes("*Price Move*"));
+      const tradeBlock = payload.blocks.find((block) => block.type === "section" && block.text?.text.includes("*Largest Bet*"));
+      const recommendationBlock = payload.blocks.find((block) => block.type === "section" && block.text?.text.includes("*Recommendation*"));
+      const actionBlock = payload.blocks.find((block) => block.type === "actions");
+
+      expect(payload.text).toContain("MARKET ACTIVITY");
+      expect(headerBlock?.text?.text).toContain("MARKET ACTIVITY");
+      expect(marketBlock?.text?.text).toContain("Military action against Iran ends on Mar 21");
+      expect(directionBlock?.text?.text).toContain("Heavy YES buying");
+      expect(priceBlock?.text?.text).toContain("0.28");
+      expect(priceBlock?.text?.text).toContain("0.39");
+      expect(tradeBlock?.text?.text).toContain("$48k YES @ 0.31");
+      expect(tradeBlock?.text?.text).toContain("wallet_age: 2h");
+      expect(recommendationBlock?.text?.text).toContain("Lean YES");
+      expect(actionBlock?.elements?.[0]?.url).toBe(
+        "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-ends-on-march-21-2026"
+      );
     });
   });
 

@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
+import type { ReplayLedgerSnapshot } from "../surveillance/replay-ledger.js";
 
 /**
  * Redis key prefixes
@@ -10,6 +11,7 @@ const KEYS = {
   MARKET: (id: string) => `market:${id}`,
   MARKET_BETS: (id: string) => `market:${id}:bets`,
   MARKET_ALERTED: (id: string) => `market:${id}:alerted`,
+  SURVEILLANCE_LEDGER: "surveillance:ledger",
 } as const;
 
 /**
@@ -404,6 +406,24 @@ export class MarketCache {
     await this.client.del(key);
   }
 
+  async setSurveillanceLedgerSnapshot(snapshot: ReplayLedgerSnapshot): Promise<void> {
+    await this.client.set(
+      KEYS.SURVEILLANCE_LEDGER,
+      JSON.stringify(snapshot),
+      "EX",
+      DEFAULT_TTL_SECONDS
+    );
+  }
+
+  async getSurveillanceLedgerSnapshot(): Promise<ReplayLedgerSnapshot> {
+    const data = await this.client.get(KEYS.SURVEILLANCE_LEDGER);
+    if (!data) {
+      return { entries: [] };
+    }
+
+    return JSON.parse(data) as ReplayLedgerSnapshot;
+  }
+
   // ===========================================================================
   // Utility Methods
   // ===========================================================================
@@ -435,4 +455,17 @@ export class MarketCache {
       await this.client.del(...keys);
     }
   }
+}
+
+const sharedCachesByUrl = new Map<string, MarketCache>();
+
+export function getMarketCache(redisUrl: string): MarketCache {
+  const existingCache = sharedCachesByUrl.get(redisUrl);
+  if (existingCache) {
+    return existingCache;
+  }
+
+  const cache = new MarketCache(redisUrl);
+  sharedCachesByUrl.set(redisUrl, cache);
+  return cache;
 }

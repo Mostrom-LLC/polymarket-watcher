@@ -1,6 +1,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { z } from "zod";
-import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
+import {
+  isBinaryYesNoMarket,
+  isNoOutcomeLabel,
+  isYesOutcomeLabel,
+  type NormalizedMarket,
+  type NormalizedTrade,
+} from "../api/types.js";
 
 export interface MarketVoteRecommendation {
   vote: "YES" | "NO" | "HOLD";
@@ -78,9 +84,9 @@ function outcomeVolumes(trades: NormalizedTrade[]) {
   return trades.reduce(
     (totals, trade) => {
       const value = trade.size * trade.price;
-      if (trade.outcome === "Yes" || trade.outcome === "YES") {
+      if (isYesOutcomeLabel(trade.outcome)) {
         totals.yes += value;
-      } else if (trade.outcome === "No" || trade.outcome === "NO") {
+      } else if (isNoOutcomeLabel(trade.outcome)) {
         totals.no += value;
       }
       return totals;
@@ -91,7 +97,7 @@ function outcomeVolumes(trades: NormalizedTrade[]) {
 
 function momentumDeltaForOutcome(trades: NormalizedTrade[], outcome: "Yes" | "No") {
   const outcomeTrades = trades
-    .filter((trade) => trade.outcome === outcome)
+    .filter((trade) => outcome === "Yes" ? isYesOutcomeLabel(trade.outcome) : isNoOutcomeLabel(trade.outcome))
     .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
 
   if (outcomeTrades.length < 2) {
@@ -109,9 +115,10 @@ export function summarizeMarketSignals(
   market: NormalizedMarket,
   trades: NormalizedTrade[]
 ): MarketSignalSummary {
-  const yesPrice = market.outcomePrices[0] ?? 0;
-  const noPrice = market.outcomePrices[1] ?? Math.max(0, 1 - yesPrice);
-  const sortedTrades = [...trades].sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime());
+  const yesIndex = market.outcomes.findIndex((outcome) => isYesOutcomeLabel(outcome));
+  const noIndex = market.outcomes.findIndex((outcome) => isNoOutcomeLabel(outcome));
+  const yesPrice = yesIndex >= 0 ? (market.outcomePrices[yesIndex] ?? 0) : 0;
+  const noPrice = noIndex >= 0 ? (market.outcomePrices[noIndex] ?? Math.max(0, 1 - yesPrice)) : Math.max(0, 1 - yesPrice);
   const recentVolume = trades.reduce((sum, trade) => sum + trade.size * trade.price, 0);
   const { yes, no } = outcomeVolumes(trades);
   const minutesUntilClose = market.endDate
@@ -192,6 +199,14 @@ export class MarketRecommender {
     market: NormalizedMarket,
     trades: NormalizedTrade[]
   ): Promise<MarketVoteRecommendation> {
+    if (!isBinaryYesNoMarket(market)) {
+      return {
+        vote: "HOLD",
+        confidence: "LOW",
+        reasoning: "This market uses multiple outcome buckets instead of a simple YES/NO structure, so the binary recommendation logic is intentionally skipped.",
+      };
+    }
+
     const signals = summarizeMarketSignals(market, trades);
     const fallback = fallbackRecommendationFromSignals(market, signals);
 

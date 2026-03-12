@@ -7,6 +7,7 @@
 // Export clients
 export { GammaApiClient } from "./gamma-client.js";
 export { ClobApiClient } from "./clob-client.js";
+export { DataApiClient } from "./data-client.js";
 
 // Export types
 export type {
@@ -15,6 +16,11 @@ export type {
   GammaOutcome,
   ClobTrade,
   ClobOpenInterest,
+  DataActivity,
+  DataPosition,
+  ClosedPosition,
+  MarketHolder,
+  MarketHolderGroup,
   NormalizedMarket,
   NormalizedTrade,
   ApiClientOptions,
@@ -27,4 +33,9 @@ export {
   gammaOutcomeSchema,
   clobTradeSchema,
   clobOpenInterestSchema,
+  dataActivitySchema,
+  dataPositionSchema,
+  closedPositionSchema,
+  marketHolderSchema,
+  marketHolderGroupSchema,
 } from "./types.js";

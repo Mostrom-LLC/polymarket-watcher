@@ -37,6 +37,16 @@ const jsonStringOrArray = <T>(itemSchema: z.ZodType<T>) =>
     z.array(itemSchema),
   ]);
 
+const nullableStringNumberSchema = z
+  .union([z.string(), z.number(), z.null(), z.undefined()])
+  .transform((value) => {
+    if (value === null || value === undefined || value === "") {
+      return 0;
+    }
+
+    return typeof value === "number" ? value : parseFloat(value);
+  });
+
 /**
  * Outcomes schema - handles multiple formats from the API:
  * 1. JSON string of titles: "[\"Yes\",\"No\"]"
@@ -103,13 +113,17 @@ export const gammaMarketSchema = z.object({
   conditionId: z.string(),
   slug: z.string(),
   resolutionSource: z.string().optional(),
-  endDate: z.string().optional(),
-  liquidity: z.string().transform((v) => parseFloat(v)),
-  volume: z.string().transform((v) => parseFloat(v)),
+  endDate: z.string().nullable().optional(),
+  liquidity: nullableStringNumberSchema,
+  volume: nullableStringNumberSchema,
   active: z.boolean(),
   closed: z.boolean(),
   archived: z.boolean().optional(),
   acceptingOrders: z.boolean().optional(),
+  groupItemTitle: z.string().nullable().optional(),
+  groupItemThreshold: z.union([z.string(), z.number(), z.null()]).optional(),
+  questionID: z.string().optional(),
+  negRiskMarketID: z.string().optional(),
   // These fields can come as JSON strings, arrays of strings, or arrays of objects
   outcomes: outcomesSchema.optional(),
   outcomePrices: outcomePricesSchema.optional(),
@@ -127,11 +141,13 @@ export const gammaEventSchema = z.object({
   slug: z.string(),
   description: z.string().optional(),
   startDate: z.string().optional(),
-  endDate: z.string().optional(),
+  endDate: z.string().nullable().optional(),
   markets: z.array(gammaMarketSchema).optional(),
   volume: z.string().transform((v) => parseFloat(v)).optional(),
   liquidity: z.string().transform((v) => parseFloat(v)).optional(),
   competitionState: z.string().optional(),
+  showAllOutcomes: z.boolean().optional(),
+  negRiskMarketID: z.string().optional(),
 });
 
 export type GammaEvent = z.infer<typeof gammaEventSchema>;
@@ -149,7 +165,24 @@ export const gammaListResponseSchema = <T extends z.ZodTypeAny>(itemSchema: T) =
 /**
  * Trade from CLOB API
  */
-export const clobTradeSchema = z.object({
+const clobNumberLikeSchema = z.union([z.number(), z.string()]).transform((value) =>
+  typeof value === "number" ? value : parseFloat(value)
+);
+
+const clobTimestampSchema = z.union([z.number(), z.string()]).transform((value) => {
+  if (typeof value === "number") {
+    return new Date(value * 1000).toISOString();
+  }
+
+  const maybeEpoch = Number(value);
+  if (Number.isFinite(maybeEpoch) && /^\d+(\.\d+)?$/.test(value)) {
+    return new Date(maybeEpoch * 1000).toISOString();
+  }
+
+  return new Date(value).toISOString();
+});
+
+const legacyClobTradeSchema = z.object({
   id: z.string(),
   taker_order_id: z.string(),
   market: z.string(),
@@ -168,6 +201,41 @@ export const clobTradeSchema = z.object({
   transaction_hash: z.string().optional(),
   trader_side: z.enum(["TAKER", "MAKER"]).optional(),
 });
+
+const dataApiTradeSchema = z
+  .object({
+    proxyWallet: z.string().optional(),
+    side: z.enum(["BUY", "SELL"]),
+    asset: z.string(),
+    conditionId: z.string(),
+    size: clobNumberLikeSchema,
+    price: clobNumberLikeSchema,
+    timestamp: clobTimestampSchema,
+    outcome: z.string().optional(),
+    transactionHash: z.string().optional(),
+  })
+  .transform((trade) => {
+    const syntheticId = trade.transactionHash ?? `${trade.conditionId}:${trade.asset}:${trade.timestamp}`;
+
+    return {
+      id: syntheticId,
+      taker_order_id: syntheticId,
+      market: trade.conditionId,
+      asset_id: trade.asset,
+      side: trade.side,
+      size: trade.size,
+      fee_rate_bps: 0,
+      price: trade.price,
+      status: "MATCHED",
+      match_time: trade.timestamp,
+      outcome: trade.outcome,
+      owner: trade.proxyWallet,
+      maker_address: undefined,
+      transaction_hash: trade.transactionHash,
+    };
+  });
+
+export const clobTradeSchema = z.union([legacyClobTradeSchema, dataApiTradeSchema]);
 
 export type ClobTrade = z.infer<typeof clobTradeSchema>;
 
@@ -193,6 +261,165 @@ export const clobPaginatedResponseSchema = <T extends z.ZodTypeAny>(itemSchema: 
     limit: z.number().optional(),
   });
 
+const numberLikeSchema = z.union([z.number(), z.string()]).transform((value) =>
+  typeof value === "number" ? value : parseFloat(value)
+);
+
+const optionalNumberLikeSchema = z
+  .union([z.number(), z.string(), z.null(), z.undefined()])
+  .transform((value) => {
+    if (value === null || value === undefined || value === "") {
+      return 0;
+    }
+
+    return typeof value === "number" ? value : parseFloat(value);
+  });
+
+const dateLikeSchema = z.union([z.number(), z.string(), z.date()]).transform((value) => {
+  if (value instanceof Date) {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return new Date(value * 1000);
+  }
+
+  const maybeEpoch = Number(value);
+  if (Number.isFinite(maybeEpoch) && /^\d+(\.\d+)?$/.test(value)) {
+    return new Date(maybeEpoch * 1000);
+  }
+
+  return new Date(value);
+});
+
+const optionalDateLikeSchema = z
+  .union([z.number(), z.string(), z.date(), z.null(), z.undefined()])
+  .transform((value) => {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      return value;
+    }
+
+    if (typeof value === "number") {
+      return new Date(value * 1000);
+    }
+
+    const maybeEpoch = Number(value);
+    if (Number.isFinite(maybeEpoch) && /^\d+(\.\d+)?$/.test(value)) {
+      return new Date(maybeEpoch * 1000);
+    }
+
+    return new Date(value);
+  });
+
+// =============================================================================
+// Data API Types (Activity, Positions, Holders)
+// =============================================================================
+
+export const dataActivitySchema = z.object({
+  proxyWallet: z.string(),
+  timestamp: dateLikeSchema,
+  conditionId: z.string(),
+  type: z.string(),
+  size: optionalNumberLikeSchema,
+  usdcSize: optionalNumberLikeSchema,
+  transactionHash: z.string().optional(),
+  price: z.union([z.number(), z.string(), z.null(), z.undefined()]).transform((value) => {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+
+    return typeof value === "number" ? value : parseFloat(value);
+  }),
+  asset: z.string().optional(),
+  side: z.enum(["BUY", "SELL"]).optional(),
+  outcomeIndex: z.number().optional(),
+  title: z.string().optional(),
+  slug: z.string().optional(),
+  icon: z.string().optional(),
+  eventSlug: z.string().optional(),
+  outcome: z.string().nullable().optional(),
+});
+
+export type DataActivity = z.infer<typeof dataActivitySchema>;
+
+export const dataPositionSchema = z.object({
+  proxyWallet: z.string(),
+  asset: z.string(),
+  conditionId: z.string(),
+  size: optionalNumberLikeSchema,
+  avgPrice: optionalNumberLikeSchema,
+  initialValue: optionalNumberLikeSchema,
+  currentValue: optionalNumberLikeSchema,
+  cashPnl: optionalNumberLikeSchema,
+  percentPnl: optionalNumberLikeSchema,
+  totalBought: optionalNumberLikeSchema,
+  realizedPnl: optionalNumberLikeSchema,
+  percentRealizedPnl: optionalNumberLikeSchema,
+  curPrice: optionalNumberLikeSchema,
+  redeemable: z.boolean().optional().default(false),
+  mergeable: z.boolean().optional().default(false),
+  title: z.string().optional(),
+  slug: z.string().optional(),
+  icon: z.string().optional(),
+  eventSlug: z.string().optional(),
+  outcome: z.string().nullable().optional(),
+  outcomeIndex: z.number().optional(),
+  oppositeOutcome: z.string().nullable().optional(),
+  oppositeAsset: z.string().nullable().optional(),
+  endDate: optionalDateLikeSchema,
+  negativeRisk: z.boolean().optional(),
+});
+
+export type DataPosition = z.infer<typeof dataPositionSchema>;
+
+export const closedPositionSchema = z.object({
+  proxyWallet: z.string(),
+  asset: z.string(),
+  conditionId: z.string(),
+  avgPrice: optionalNumberLikeSchema,
+  totalBought: optionalNumberLikeSchema,
+  realizedPnl: optionalNumberLikeSchema,
+  curPrice: optionalNumberLikeSchema,
+  timestamp: dateLikeSchema,
+  title: z.string().optional(),
+  slug: z.string().optional(),
+  icon: z.string().optional(),
+  eventSlug: z.string().optional(),
+  outcome: z.string().nullable().optional(),
+  outcomeIndex: z.number().optional(),
+  oppositeOutcome: z.string().nullable().optional(),
+  oppositeAsset: z.string().nullable().optional(),
+  endDate: optionalDateLikeSchema,
+});
+
+export type ClosedPosition = z.infer<typeof closedPositionSchema>;
+
+export const marketHolderSchema = z.object({
+  proxyWallet: z.string(),
+  bio: z.string().optional(),
+  asset: z.string(),
+  pseudonym: z.string().optional(),
+  amount: numberLikeSchema,
+  displayUsernamePublic: z.boolean().optional(),
+  outcomeIndex: z.number().optional(),
+  name: z.string().optional(),
+  profileImage: z.string().optional(),
+  profileImageOptimized: z.string().optional(),
+});
+
+export type MarketHolder = z.infer<typeof marketHolderSchema>;
+
+export const marketHolderGroupSchema = z.object({
+  token: z.string(),
+  holders: z.array(marketHolderSchema),
+});
+
+export type MarketHolderGroup = z.infer<typeof marketHolderGroupSchema>;
+
 // =============================================================================
 // Unified Types (Used by application)
 // =============================================================================
@@ -212,6 +439,44 @@ export interface NormalizedMarket {
   active: boolean;
   closed: boolean;
   tokenIds: string[];
+}
+
+export type MarketStructure = "binary_yes_no" | "multi_outcome" | "unknown";
+
+export function normalizeOutcomeLabel(label: string | null | undefined): string {
+  return (label ?? "").trim().toLowerCase();
+}
+
+export function isYesOutcomeLabel(label: string | null | undefined): boolean {
+  return normalizeOutcomeLabel(label) === "yes";
+}
+
+export function isNoOutcomeLabel(label: string | null | undefined): boolean {
+  return normalizeOutcomeLabel(label) === "no";
+}
+
+export function getMarketStructure(market: Pick<NormalizedMarket, "outcomes" | "tokenIds">): MarketStructure {
+  const normalizedOutcomes = market.outcomes.map((outcome) => normalizeOutcomeLabel(outcome));
+
+  if (normalizedOutcomes.length === 2 && normalizedOutcomes.includes("yes") && normalizedOutcomes.includes("no")) {
+    return "binary_yes_no";
+  }
+
+  if (normalizedOutcomes.length > 0 || market.tokenIds.length > 2) {
+    return "multi_outcome";
+  }
+
+  return "unknown";
+}
+
+export function isBinaryYesNoMarket(market: Pick<NormalizedMarket, "outcomes" | "tokenIds">): boolean {
+  return getMarketStructure(market) === "binary_yes_no";
+}
+
+export function supportsClosingSoonWhaleAlerts(
+  market: Pick<NormalizedMarket, "outcomes" | "tokenIds" | "endDate">
+): market is Pick<NormalizedMarket, "outcomes" | "tokenIds"> & { endDate: Date } {
+  return market.endDate !== null && isBinaryYesNoMarket(market);
 }
 
 /**

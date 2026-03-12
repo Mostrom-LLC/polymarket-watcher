@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fallbackRecommendationFromSignals,
+  MarketRecommender,
   summarizeMarketSignals,
   type MarketSignalSummary,
 } from "./market-recommender.js";
@@ -97,5 +98,22 @@ describe("MarketRecommender helpers", () => {
 
     expect(recommendation.vote).toBe("YES");
     expect(recommendation.confidence).toBe("HIGH");
+  });
+
+  it("refuses to produce a binary recommendation for multi-outcome markets", async () => {
+    const multiOutcomeMarket: NormalizedMarket = {
+      ...sampleMarket,
+      question: "US x Iran ceasefire by...?",
+      outcomes: ["March 15", "March 31", "April 30"],
+      outcomePrices: [0.02, 0.23, 0.47],
+      tokenIds: ["march-15", "march-31", "april-30"],
+    };
+    const recommender = new MarketRecommender("test-key");
+
+    const recommendation = await recommender.recommendVote(multiOutcomeMarket, []);
+
+    expect(recommendation.vote).toBe("HOLD");
+    expect(recommendation.confidence).toBe("LOW");
+    expect(recommendation.reasoning).toContain("multiple outcome buckets");
   });
 });
