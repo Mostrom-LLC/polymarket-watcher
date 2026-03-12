@@ -1,7 +1,7 @@
 import { serve } from "inngest/express";
 import { inngest, functions } from "./workflows/index.js";
 import { getConfig } from "./config/loader.js";
-import { MarketCache } from "./cache/redis.js";
+import { getMarketCache } from "./cache/redis.js";
 import { SlackNotifier } from "./notifications/slack.js";
 import express from "express";
 import type { Request, Response } from "express";
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   console.log(`[polymarket-watcher] Log level: ${config.env.LOG_LEVEL}`);
   
   // Initialize services for health checks
-  const cache = new MarketCache(config.env.REDIS_URL);
+  const cache = getMarketCache(config.env.REDIS_URL);
   const slack = new SlackNotifier(
     config.env.SLACK_BOT_TOKEN,
     config.env.SLACK_DEFAULT_CHANNEL

@@ -7,6 +7,7 @@ import {
   type NormalizedTrade,
   type ApiClientOptions,
 } from "./types.js";
+import { z } from "zod";
 
 /**
  * CLOB/Data API Client
@@ -102,10 +103,7 @@ export class ClobApiClient {
     const queryString = searchParams.toString();
     const url = `${this.baseUrl}/trades${queryString ? `?${queryString}` : ""}`;
 
-    const result = await this.fetchWithRetry(url, (data) => {
-      const schema = clobPaginatedResponseSchema(clobTradeSchema);
-      return schema.parse(data);
-    });
+    const result = await this.fetchWithRetry(url, (data) => this.parseTradeResponse(data));
 
     return {
       trades: result.data,
@@ -132,10 +130,7 @@ export class ClobApiClient {
 
     const url = `${this.baseUrl}/trades?${searchParams.toString()}`;
 
-    const result = await this.fetchWithRetry(url, (data) => {
-      const schema = clobPaginatedResponseSchema(clobTradeSchema);
-      return schema.parse(data);
-    });
+    const result = await this.fetchWithRetry(url, (data) => this.parseTradeResponse(data));
 
     return {
       trades: result.data,
@@ -214,6 +209,10 @@ export class ClobApiClient {
    * Normalize a CLOB trade to unified format
    */
   normalizeTrade(trade: ClobTrade, marketId?: string): NormalizedTrade {
+    const traderAddress = "maker_address" in trade
+      ? trade.owner ?? trade.maker_address ?? null
+      : trade.owner ?? null;
+
     return {
       id: trade.id,
       marketId: marketId ?? trade.market,
@@ -223,7 +222,7 @@ export class ClobApiClient {
       price: trade.price,
       timestamp: new Date(trade.match_time),
       outcome: trade.outcome ?? null,
-      traderAddress: trade.owner ?? trade.maker_address ?? null,
+      traderAddress,
     };
   }
 
@@ -232,5 +231,17 @@ export class ClobApiClient {
    */
   calculateTradeValue(trade: ClobTrade | NormalizedTrade): number {
     return trade.size * trade.price;
+  }
+
+  private parseTradeResponse(data: unknown): { data: ClobTrade[]; next_cursor: string | undefined } {
+    const schema = z.union([
+      clobPaginatedResponseSchema(clobTradeSchema).transform((response) => ({
+        data: response.data,
+        next_cursor: response.next_cursor,
+      })),
+      z.array(clobTradeSchema).transform((trades) => ({ data: trades, next_cursor: undefined as string | undefined })),
+    ]);
+
+    return schema.parse(data);
   }
 }

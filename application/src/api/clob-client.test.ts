@@ -62,6 +62,37 @@ describe("ClobApiClient", () => {
       expect(result.trades).toHaveLength(0);
       expect(result.nextCursor).toBeUndefined();
     });
+
+    it("should parse the live data-api array trade response shape", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([
+          {
+            proxyWallet: "0x317a2bbc16523cb5685793d0d1eb7d6889d08243",
+            side: "SELL",
+            asset: "4238883412901777965662481221529401293931521936763305879944361882748118798017",
+            conditionId: "0xdaa794bb1f13da8bf3a2ef20d381165468a1909fd2ed3a940c260ffbdc584879",
+            size: 9.649995,
+            price: 0.470999622279597,
+            timestamp: 1773333325,
+            title: "Bitcoin Up or Down - March 12, 12:35PM-12:40PM ET",
+            slug: "btc-updown-5m-1773333300",
+            eventSlug: "btc-updown-5m-1773333300",
+            outcome: "Down",
+            outcomeIndex: 1,
+            transactionHash: "0x3be7257d0d96bb76eb9c233c9b108d6f56914523f369b29e44e928dcd97f74ed",
+          },
+        ]),
+      });
+
+      const result = await client.getTrades({ limit: 1 });
+
+      expect(result.trades).toHaveLength(1);
+      expect(result.trades[0]?.market).toBe("0xdaa794bb1f13da8bf3a2ef20d381165468a1909fd2ed3a940c260ffbdc584879");
+      expect(result.trades[0]?.asset_id).toBe("4238883412901777965662481221529401293931521936763305879944361882748118798017");
+      expect(result.trades[0]?.owner).toBe("0x317a2bbc16523cb5685793d0d1eb7d6889d08243");
+      expect(result.nextCursor).toBeUndefined();
+    });
   });
 
   describe("getTradesByToken", () => {
@@ -222,6 +253,30 @@ describe("ClobApiClient", () => {
       expect(normalized.timestamp).toBeInstanceOf(Date);
       expect(normalized.outcome).toBe("Yes");
       expect(normalized.traderAddress).toBe("0x1234");
+    });
+
+    it("should normalize a live data-api trade shape", () => {
+      const dataApiTrade = {
+        id: "0x3be7257d0d96bb76eb9c233c9b108d6f56914523f369b29e44e928dcd97f74ed:1",
+        taker_order_id: "0x3be7257d0d96bb76eb9c233c9b108d6f56914523f369b29e44e928dcd97f74ed",
+        market: "0xdaa794bb1f13da8bf3a2ef20d381165468a1909fd2ed3a940c260ffbdc584879",
+        asset_id: "4238883412901777965662481221529401293931521936763305879944361882748118798017",
+        side: "SELL" as const,
+        size: 9.649995,
+        fee_rate_bps: 0,
+        price: 0.470999622279597,
+        status: "MATCHED",
+        match_time: "2026-03-12T16:35:25.000Z",
+        outcome: "Down",
+        owner: "0x317a2bbc16523cb5685793d0d1eb7d6889d08243",
+      };
+
+      const normalized = client.normalizeTrade(dataApiTrade);
+
+      expect(normalized.marketId).toBe("0xdaa794bb1f13da8bf3a2ef20d381165468a1909fd2ed3a940c260ffbdc584879");
+      expect(normalized.tokenId).toBe("4238883412901777965662481221529401293931521936763305879944361882748118798017");
+      expect(normalized.traderAddress).toBe("0x317a2bbc16523cb5685793d0d1eb7d6889d08243");
+      expect(normalized.timestamp).toEqual(new Date("2026-03-12T16:35:25.000Z"));
     });
   });
 

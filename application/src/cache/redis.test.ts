@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
+import type { ReplayLedgerSnapshot } from "../surveillance/replay-ledger.js";
 
 // Create mock functions for Redis methods
 const mockConnect = vi.fn().mockResolvedValue(undefined);
@@ -62,7 +63,7 @@ vi.mock("ioredis", () => {
 });
 
 // Import after mock is set up
-import { MarketCache } from "./redis.js";
+import { MarketCache, getMarketCache } from "./redis.js";
 
 describe("MarketCache", () => {
   let cache: MarketCache;
@@ -113,6 +114,15 @@ describe("MarketCache", () => {
       mockPing.mockRejectedValueOnce(new Error("Connection refused"));
       const result = await cache.healthCheck();
       expect(result).toBe(false);
+    });
+  });
+
+  describe("shared cache instances", () => {
+    it("reuses the same MarketCache for the same Redis URL", () => {
+      const first = getMarketCache("redis://shared-host:6379");
+      const second = getMarketCache("redis://shared-host:6379");
+
+      expect(first).toBe(second);
     });
   });
 
@@ -257,6 +267,33 @@ describe("MarketCache", () => {
     it("should clear alert flag", async () => {
       await cache.clearAlerted("market-1");
       expect(mockDel).toHaveBeenCalledWith("market:market-1:alerted");
+    });
+  });
+
+  describe("Surveillance replay ledger", () => {
+    it("stores and retrieves the replay ledger snapshot", async () => {
+      const snapshot: ReplayLedgerSnapshot = {
+        entries: [
+          {
+            fingerprint: "military-action-against-iran-ends-on:adjacent_bucket_spike",
+            verdict: "watchlist",
+            observedAt: "2026-03-12T12:00:00.000Z",
+          },
+        ],
+      };
+
+      await cache.setSurveillanceLedgerSnapshot(snapshot);
+      expect(mockSet).toHaveBeenCalledWith(
+        "surveillance:ledger",
+        JSON.stringify(snapshot),
+        "EX",
+        expect.any(Number)
+      );
+
+      mockGet.mockResolvedValueOnce(JSON.stringify(snapshot));
+      const result = await cache.getSurveillanceLedgerSnapshot();
+
+      expect(result).toEqual(snapshot);
     });
   });
 

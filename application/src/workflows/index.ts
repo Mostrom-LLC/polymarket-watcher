@@ -1,13 +1,27 @@
 import { Inngest } from "inngest";
 import { GammaApiClient } from "../api/gamma-client.js";
 import { ClobApiClient } from "../api/clob-client.js";
-import { MarketCache } from "../cache/redis.js";
+import { DataApiClient } from "../api/data-client.js";
+import { getMarketCache } from "../cache/redis.js";
 import { batchClassifyMarkets } from "../agents/topic-classifier.js";
 import { MarketRecommender, type MarketVoteRecommendation } from "../agents/market-recommender.js";
 import { analyzeWhaleTrades } from "../agents/whale-analyzer.js";
 import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary } from "../notifications/slack.js";
 import { getConfig } from "../config/loader.js";
-import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
+import {
+  normalizeOutcomeLabel,
+  type GammaEvent,
+  supportsClosingSoonWhaleAlerts,
+  type NormalizedMarket,
+  type NormalizedTrade,
+} from "../api/types.js";
+import { classifyMarketFamily, type MarketFamily } from "../surveillance/market-family.js";
+import { deliverAnalystAlert } from "../surveillance/alert-delivery.js";
+import { type AnalystVerdict, type EventClock } from "../surveillance/alert-pipeline.js";
+import { runSurveillancePipeline } from "../surveillance/surveillance-pipeline.js";
+import type { FamilyChildSnapshot } from "../surveillance/family-anomaly.js";
+import type { WalletEntryObservation, WalletSuspiciousnessInput } from "../surveillance/wallet-surveillance.js";
+import type { ReplayLedgerSnapshot } from "../surveillance/replay-ledger.js";
 
 /**
  * Inngest client instance
@@ -19,6 +33,11 @@ export const inngest = new Inngest({
 
 export const WHALE_THRESHOLD_USD = 10000;
 export const MARKET_CLOSE_WINDOW_HOURS = 48;
+export const SURVEILLANCE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+export const SURVEILLANCE_EVENT_FETCH_LIMIT = 200;
+export const SURVEILLANCE_MAX_FAMILIES_PER_RUN = 25;
+export const SURVEILLANCE_WALLET_LOOKBACK_LIMIT = 50;
+export const SURVEILLANCE_TOP_WALLETS_PER_FAMILY = 5;
 
 // =============================================================================
 // Helper Functions
@@ -86,7 +105,7 @@ function hydrateMarketVoteRecommendation(data: unknown): MarketVoteRecommendatio
 }
 
 export function closesWithinHours(market: NormalizedMarket, hours: number): boolean {
-  if (!market.endDate) {
+  if (!supportsClosingSoonWhaleAlerts(market)) {
     return false;
   }
 
@@ -96,6 +115,288 @@ export function closesWithinHours(market: NormalizedMarket, hours: number): bool
 
 export function hasMinimumWhaleTrade(trades: NormalizedTrade[], minimumUsd: number = WHALE_THRESHOLD_USD): boolean {
   return trades.some((trade) => trade.size * trade.price >= minimumUsd);
+}
+
+export function shouldDeliverAnalystAlert(verdict: AnalystVerdict): boolean {
+  return verdict !== "benign";
+}
+
+function isSurveillanceFamily(family: MarketFamily): boolean {
+  return family.classification !== "standalone_binary" && family.classification !== "grouped_generic";
+}
+
+function familyMatchesTopics(family: MarketFamily, topics: string[]): boolean {
+  if (topics.length === 0) {
+    return true;
+  }
+
+  const haystack = [
+    family.slug,
+    family.title,
+    ...family.childMarkets.flatMap((child) => [
+      child.slug,
+      child.question,
+      child.groupItemTitle ?? "",
+    ]),
+  ].join(" ").toLowerCase();
+
+  return topics.some((topic) => haystack.includes(topic.trim().toLowerCase()));
+}
+
+export function findTopicRelevantFamilies(events: GammaEvent[], topics: string[]): MarketFamily[] {
+  return events
+    .map((event) => classifyMarketFamily(event))
+    .filter((family) => isSurveillanceFamily(family) && familyMatchesTopics(family, topics));
+}
+
+export function buildMarketDeadlineClock(family: MarketFamily): EventClock {
+  const childDeadlines = family.childMarkets
+    .map((child) => child.endDate)
+    .filter((date): date is Date => date !== null)
+    .sort((left, right) => left.getTime() - right.getTime());
+
+  return {
+    occurredAt: childDeadlines[0] ?? family.eventEndDate ?? new Date(),
+    source: "market_deadline",
+    publishedAt: null,
+  };
+}
+
+function inferTradeDirection(trade: NormalizedTrade): "YES" | "NO" | "UNKNOWN" {
+  const outcome = normalizeOutcomeLabel(trade.outcome);
+  if (outcome === "yes") {
+    return trade.side === "BUY" ? "YES" : "NO";
+  }
+
+  if (outcome === "no") {
+    return trade.side === "BUY" ? "NO" : "YES";
+  }
+
+  return "UNKNOWN";
+}
+
+function calculatePriceChange(trades: NormalizedTrade[], now: Date, minutes: number, currentPrice: number): number {
+  const windowStart = now.getTime() - minutes * 60 * 1000;
+  const windowTrades = trades
+    .filter((trade) => trade.timestamp.getTime() >= windowStart)
+    .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
+
+  const baseline = windowTrades[0]?.price;
+  return baseline !== undefined ? currentPrice - baseline : 0;
+}
+
+function getRecentWalletTrades<T extends NormalizedTrade>(trades: T[], now: Date, minutes: number): T[] {
+  const windowStart = now.getTime() - minutes * 60 * 1000;
+  return trades.filter((trade) => trade.timestamp.getTime() >= windowStart && trade.traderAddress);
+}
+
+async function resolveTradeAddress(
+  clobApi: ClobApiClient,
+  trade: NormalizedTrade
+): Promise<string | null> {
+  if (trade.traderAddress) {
+    return trade.traderAddress;
+  }
+
+  const recent = await clobApi.getTradesByToken(trade.tokenId, { limit: 20 });
+  const match = recent.trades
+    .map((candidate) => clobApi.normalizeTrade(candidate, trade.marketId))
+    .find((candidate) =>
+      Math.abs(candidate.timestamp.getTime() - trade.timestamp.getTime()) <= 1000 &&
+      Math.abs(candidate.size - trade.size) < 0.0001 &&
+      Math.abs(candidate.price - trade.price) < 0.0001 &&
+      candidate.traderAddress
+    );
+
+  return match?.traderAddress ?? null;
+}
+
+async function buildFamilySurveillanceInputs(
+  family: MarketFamily,
+  clobApi: ClobApiClient,
+  dataApi: DataApiClient
+): Promise<{
+  childSnapshots: FamilyChildSnapshot[];
+  walletEntries: WalletEntryObservation[];
+  walletInputs: WalletSuspiciousnessInput[];
+}> {
+  const now = new Date();
+  const childSnapshots: FamilyChildSnapshot[] = [];
+  const familyTrades: Array<NormalizedTrade & { childSlug: string; childLiquidity: number; childVolume: number; childOpenInterest: number }> = [];
+
+  for (const [childIndex, child] of family.childMarkets.entries()) {
+    if (child.tokenIds.length === 0) {
+      continue;
+    }
+
+    const openInterestMap = await clobApi.getMultipleOpenInterest(child.tokenIds);
+    const normalizedTrades = (
+      await Promise.all(
+        child.tokenIds.map(async (tokenId) => {
+          const result = await clobApi.getTradesByToken(tokenId, { limit: 25 });
+          return result.trades.map((trade) => clobApi.normalizeTrade(trade, child.id));
+        })
+      )
+    ).flat();
+
+    const yesNoTrades = normalizedTrades.filter((trade) => {
+      const label = normalizeOutcomeLabel(trade.outcome);
+      return label === "yes" || label === "no";
+    });
+
+    const currentPrice = child.outcomePrices[0] ?? 0;
+    const openInterest = child.tokenIds.reduce((sum, tokenId) => sum + (openInterestMap.get(tokenId) ?? 0), 0);
+    const volume1h = yesNoTrades
+      .filter((trade) => trade.timestamp.getTime() >= now.getTime() - 60 * 60 * 1000)
+      .reduce((sum, trade) => sum + trade.size * trade.price, 0);
+
+    childSnapshots.push({
+      slug: child.slug,
+      label: child.groupItemTitle ?? child.question,
+      thresholdIndex: child.groupItemThreshold ?? childIndex,
+      currentPrice,
+      priceChange5m: calculatePriceChange(yesNoTrades, now, 5, currentPrice),
+      priceChange1h: calculatePriceChange(yesNoTrades, now, 60, currentPrice),
+      volume1h,
+      volume24h: child.volume,
+      liquidity: child.liquidity,
+      openInterest,
+    });
+
+    for (const trade of yesNoTrades) {
+      familyTrades.push({
+        ...trade,
+        childSlug: child.slug,
+        childLiquidity: child.liquidity,
+        childVolume: child.volume,
+        childOpenInterest: openInterest,
+      });
+    }
+  }
+
+  const recentWalletTrades = getRecentWalletTrades(familyTrades, now, 60);
+  const walletAggregates = new Map<string, {
+    wallet: string;
+    firstTradeAt: Date;
+    notionalUsd: number;
+    latestTrade: typeof familyTrades[number];
+    largestTradeUsd: number;
+    largestTradePrice: number;
+    largestTradeDirection: "YES" | "NO" | "UNKNOWN";
+  }>();
+
+  for (const trade of recentWalletTrades) {
+    const wallet = trade.traderAddress;
+    if (!wallet) {
+      continue;
+    }
+
+    const existing = walletAggregates.get(wallet);
+    const tradeNotional = trade.size * trade.price;
+
+    if (!existing) {
+      walletAggregates.set(wallet, {
+        wallet,
+        firstTradeAt: trade.timestamp,
+        notionalUsd: tradeNotional,
+        latestTrade: trade,
+        largestTradeUsd: tradeNotional,
+        largestTradePrice: trade.price,
+        largestTradeDirection: inferTradeDirection(trade),
+      });
+      continue;
+    }
+
+    existing.notionalUsd += tradeNotional;
+    if (trade.timestamp < existing.firstTradeAt) {
+      existing.firstTradeAt = trade.timestamp;
+    }
+    if (trade.timestamp > existing.latestTrade.timestamp) {
+      existing.latestTrade = trade;
+    }
+    if (tradeNotional > existing.largestTradeUsd) {
+      existing.largestTradeUsd = tradeNotional;
+      existing.largestTradePrice = trade.price;
+      existing.largestTradeDirection = inferTradeDirection(trade);
+    }
+  }
+
+  const topWallets = [...walletAggregates.values()]
+    .sort((left, right) => right.notionalUsd - left.notionalUsd)
+    .slice(0, SURVEILLANCE_TOP_WALLETS_PER_FAMILY);
+
+  const eventClock = buildMarketDeadlineClock(family);
+  const walletEntries: WalletEntryObservation[] = [];
+  const walletInputs: WalletSuspiciousnessInput[] = [];
+
+  for (const aggregate of topWallets) {
+    const activity = await dataApi.getUserActivity({
+      user: aggregate.wallet,
+      limit: SURVEILLANCE_WALLET_LOOKBACK_LIMIT,
+      sortDirection: "DESC",
+    });
+    const positions = await dataApi.getUserPositions({
+      user: aggregate.wallet,
+      limit: 10,
+    });
+    const closedPositions = await dataApi.getClosedPositions({
+      user: aggregate.wallet,
+      limit: 20,
+    });
+    const earliestSeen = [...activity]
+      .map((item) => item.timestamp)
+      .sort((left, right) => left.getTime() - right.getTime())[0] ?? aggregate.firstTradeAt;
+    const profitableClosed = closedPositions.filter((position) => position.realizedPnl > 0);
+
+    walletEntries.push({
+      wallet: aggregate.wallet,
+      firstSeenAt: earliestSeen,
+      familySlug: family.slug,
+      childSlug: aggregate.latestTrade.childSlug,
+      enteredAt: aggregate.latestTrade.timestamp,
+      direction: inferTradeDirection(aggregate.latestTrade),
+      notionalUsd: aggregate.notionalUsd,
+      priorCoAppearanceCount: 0,
+    });
+
+    walletInputs.push({
+      wallet: aggregate.wallet,
+      familySlug: family.slug,
+      childSlug: aggregate.latestTrade.childSlug,
+      firstSeenAt: earliestSeen,
+      tradePlacedAt: aggregate.latestTrade.timestamp,
+      eventOccurredAt: eventClock.occurredAt,
+      timestampSource: eventClock.source,
+      notionalUsd: aggregate.notionalUsd,
+      recentVolume1hUsd: aggregate.latestTrade.childVolume,
+      recentLiquidityUsd: aggregate.latestTrade.childLiquidity,
+      openInterestUsd: aggregate.latestTrade.childOpenInterest,
+      clusterSize: 1,
+      repeatedPreEventWins: profitableClosed.length,
+      contractSpecificity:
+        family.classification === "grouped_exact_date"
+          ? "exact_date"
+          : family.classification === "grouped_date_threshold"
+            ? "date_threshold"
+            : family.classification === "candidate_field"
+              ? "candidate_field"
+              : "mention_count",
+      priorActivityCount: activity.length,
+      tradeDirection: aggregate.largestTradeDirection,
+      tradePrice: aggregate.largestTradePrice,
+      largestTradeUsd: aggregate.largestTradeUsd,
+      walletAgeMinutes: Math.max(
+        0,
+        Math.round((aggregate.latestTrade.timestamp.getTime() - earliestSeen.getTime()) / (1000 * 60))
+      ),
+    });
+  }
+
+  return {
+    childSnapshots,
+    walletEntries,
+    walletInputs,
+  };
 }
 
 // =============================================================================
@@ -117,7 +418,7 @@ const discoverMarkets = inngest.createFunction(
     
     // Initialize services
     const gammaApi = new GammaApiClient();
-    const cache = new MarketCache(config.env.REDIS_URL);
+    const cache = getMarketCache(config.env.REDIS_URL);
 
     // Step 1: Fetch markets closing in next 48 hours
     const marketsRaw = await step.run("fetch-closing-markets", async () => {
@@ -162,14 +463,20 @@ const discoverMarkets = inngest.createFunction(
     const matchedMarketsRaw = classificationResults;
 
     const matchedMarkets = (matchedMarketsRaw as unknown[]).map(hydrateMarket);
+    const supportedMarkets = matchedMarkets.filter((market) => supportsClosingSoonWhaleAlerts(market));
+    const skippedUnsupportedCount = matchedMarkets.length - supportedMarkets.length;
+
+    if (skippedUnsupportedCount > 0) {
+      console.log(`[discover-markets] Skipping ${skippedUnsupportedCount} non-binary or missing-date markets`);
+    }
 
     // Step 4: Cache matched markets
     await step.run("cache-matched-markets", async () => {
-      await cache.setTodayMarkets(matchedMarkets);
+      await cache.setTodayMarkets(supportedMarkets);
     });
 
-    console.log(`[discover-markets] Discovery complete: ${matchedMarkets.length} markets cached`);
-    return { scanned: markets.length, matched: matchedMarkets.length };
+    console.log(`[discover-markets] Discovery complete: ${supportedMarkets.length} markets cached`);
+    return { scanned: markets.length, matched: supportedMarkets.length };
   }
 );
 
@@ -190,7 +497,7 @@ const monitorTrades = inngest.createFunction(
   async ({ step }) => {
     const config = getConfig();
     const clobApi = new ClobApiClient();
-    const cache = new MarketCache(config.env.REDIS_URL);
+    const cache = getMarketCache(config.env.REDIS_URL);
     const recommender = new MarketRecommender(config.env.GEMINI_API_KEY, {
       model: config.user.ai.model,
       maxTokens: config.user.ai.maxTokens,
@@ -217,6 +524,11 @@ const monitorTrades = inngest.createFunction(
 
     // Step 2: Check each market for whale activity
     for (const market of markets) {
+      if (!supportsClosingSoonWhaleAlerts(market)) {
+        console.log(`[monitor-trades] Skipping unsupported market structure: ${market.question}`);
+        continue;
+      }
+
       if (!closesWithinHours(market, MARKET_CLOSE_WINDOW_HOURS)) {
         continue;
       }
@@ -299,13 +611,17 @@ const monitorTrades = inngest.createFunction(
         await step.run(`send-whale-alert-${market.id}`, async () => {
           const largestTrade = analysis.largestBets[0];
           if (largestTrade) {
+            const traderAddress = await resolveTradeAddress(clobApi, largestTrade);
             const whaleAlert: WhaleAlert = {
               market,
-              trade: largestTrade,
+              trade: {
+                ...largestTrade,
+                traderAddress,
+              },
               analysis,
               voteRecommendation,
-              traderInfo: largestTrade.traderAddress ? {
-                address: largestTrade.traderAddress,
+              traderInfo: traderAddress ? {
+                address: traderAddress,
                 isNew: false, // Would need external data to determine
               } : undefined,
             };
@@ -339,7 +655,7 @@ const dailySummary = inngest.createFunction(
   { cron: "0 21 * * *" }, // 9 PM daily
   async ({ step }) => {
     const config = getConfig();
-    const cache = new MarketCache(config.env.REDIS_URL);
+    const cache = getMarketCache(config.env.REDIS_URL);
     const notifier = new SlackNotifier(
       config.env.SLACK_BOT_TOKEN,
       config.env.SLACK_DEFAULT_CHANNEL
@@ -399,7 +715,81 @@ const dailySummary = inngest.createFunction(
   }
 );
 
+const monitorSurveillance = inngest.createFunction(
+  {
+    id: "monitor-surveillance",
+    name: "Surveillance Monitor",
+  },
+  { cron: "*/10 * * * *" },
+  async ({ step }) => {
+    const config = getConfig();
+    const gammaApi = new GammaApiClient();
+    const clobApi = new ClobApiClient();
+    const dataApi = new DataApiClient();
+    const cache = getMarketCache(config.env.REDIS_URL);
+    const notifier = new SlackNotifier(
+      config.env.SLACK_BOT_TOKEN,
+      config.env.SLACK_DEFAULT_CHANNEL
+    );
+
+    const topics = config.user.markets.map((market) => market.slug);
+    const eventsRaw = await step.run("fetch-surveillance-events", async () => {
+      return gammaApi.getEvents({ limit: SURVEILLANCE_EVENT_FETCH_LIMIT });
+    });
+    const families = findTopicRelevantFamilies(eventsRaw as GammaEvent[], topics).slice(0, SURVEILLANCE_MAX_FAMILIES_PER_RUN);
+
+    let snapshot = await step.run("get-surveillance-ledger", async () => {
+      return cache.getSurveillanceLedgerSnapshot();
+    }) as ReplayLedgerSnapshot;
+
+    let alertsSent = 0;
+
+    for (const family of families as MarketFamily[]) {
+      const inputs = await buildFamilySurveillanceInputs(family, clobApi, dataApi);
+
+      if (inputs.childSnapshots.length === 0 || inputs.walletInputs.length === 0) {
+        continue;
+      }
+
+      const result = runSurveillancePipeline({
+        family,
+        childSnapshots: inputs.childSnapshots,
+        walletEntries: inputs.walletEntries,
+        walletInputs: inputs.walletInputs,
+        eventClock: buildMarketDeadlineClock(family),
+        generatedAt: new Date(),
+      });
+
+      if (!shouldDeliverAnalystAlert(result.alert.verdict)) {
+        continue;
+      }
+
+      const delivery = await deliverAnalystAlert({
+        alert: result.alert,
+        notifier,
+        snapshot,
+        cooldownMs: SURVEILLANCE_ALERT_COOLDOWN_MS,
+      });
+
+      snapshot = delivery.snapshot;
+
+      if (delivery.sent) {
+        alertsSent++;
+      }
+    }
+
+    await step.run("persist-surveillance-ledger", async () => {
+      await cache.setSurveillanceLedgerSnapshot(snapshot);
+    });
+
+    return {
+      familiesScanned: (families as MarketFamily[]).length,
+      alertsSent,
+    };
+  }
+);
+
 /**
  * Export all workflow functions for Inngest registration
  */
-export const functions = [discoverMarkets, monitorTrades, dailySummary];
+export const functions = [discoverMarkets, monitorTrades, monitorSurveillance, dailySummary];

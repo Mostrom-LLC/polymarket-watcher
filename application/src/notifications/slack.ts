@@ -2,6 +2,7 @@ import { WebClient, type ChatPostMessageResponse, type KnownBlock, type Block } 
 import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 import type { MarketVoteRecommendation } from "../agents/market-recommender.js";
 import type { WhaleAnalysisResult } from "../agents/whale-analyzer.js";
+import type { AnalystAlert } from "../surveillance/alert-pipeline.js";
 
 // =============================================================================
 // Types
@@ -230,10 +231,10 @@ export class SlackNotifier {
             type: "button",
             text: {
               type: "plain_text",
-              text: "View Market",
+            text: "View Market",
               emoji: true,
             },
-            url: `https://polymarket.com/event/${market.slug}`,
+            url: this.buildPolymarketUrl({ marketSlug: market.slug }),
             action_id: `view_market_${market.id}`,
           },
         ],
@@ -365,10 +366,10 @@ export class SlackNotifier {
             type: "button",
             text: {
               type: "plain_text",
-              text: "View Market",
+            text: "View Market",
               emoji: true,
             },
-            url: `https://polymarket.com/event/${market.slug}`,
+            url: this.buildPolymarketUrl({ marketSlug: market.slug }),
             action_id: `view_whale_market_${market.id}`,
           },
         ],
@@ -551,6 +552,99 @@ export class SlackNotifier {
     });
   }
 
+  async sendAnalystAlert(
+    alert: AnalystAlert,
+    channel?: string
+  ): Promise<ChatPostMessageResponse | null> {
+    const targetChannel = channel ?? this.defaultChannel;
+
+    if (!this.checkRateLimit(targetChannel)) {
+      return null;
+    }
+
+    const verdictLabel = alert.verdict.toUpperCase();
+    const deltaPoints = Math.round(alert.priceMove.deltaPoints * 100);
+    const signedDelta = `${deltaPoints >= 0 ? "+" : ""}${deltaPoints}`;
+    const largestTradeUsd = Math.round(alert.largestTrade.notionalUsd / 1000);
+    const largestTradeDirection = alert.largestTrade.direction === "UNKNOWN" ? "" : ` ${alert.largestTrade.direction}`;
+    const tradePrice = alert.largestTrade.price !== null ? ` @ ${alert.largestTrade.price.toFixed(2)}` : "";
+    const walletAge = alert.largestTrade.walletAgeMinutes !== null
+      ? `\nwallet_age: ${this.formatWalletAge(alert.largestTrade.walletAgeMinutes)}`
+      : "";
+    const fallbackText = `🚨 MARKET ACTIVITY - ${alert.marketLabel}`;
+    const blocks: (KnownBlock | Block)[] = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "🚨 MARKET ACTIVITY",
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Market*\n${alert.marketLabel}`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Direction*\n${alert.direction}`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Price Move*\n${alert.priceMove.fromPrice.toFixed(2)} → ${alert.priceMove.toPrice.toFixed(2)} (${signedDelta} pts)`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Largest Bet*\n$${largestTradeUsd}k${largestTradeDirection}${tradePrice}${walletAge}`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Recommendation*\n${alert.recommendation}`,
+        },
+      },
+      { type: "divider" },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "Open Market",
+              emoji: true,
+            },
+            url: this.buildPolymarketUrl({
+              familySlug: alert.familySlug,
+              childSlug: alert.largestTrade.childSlug,
+            }),
+            action_id: `open_surveillance_market_${alert.familySlug}`,
+          },
+        ],
+      },
+    ];
+
+    return this.client.chat.postMessage({
+      channel: targetChannel,
+      text: fallbackText,
+      blocks,
+      unfurl_links: false,
+    });
+  }
+
   // ===========================================================================
   // Utility Methods
   // ===========================================================================
@@ -660,5 +754,30 @@ export class SlackNotifier {
       default:
         return rec;
     }
+  }
+
+  private formatWalletAge(minutes: number): string {
+    if (minutes < 60) {
+      return `${minutes}m`;
+    }
+
+    const hours = Math.round(minutes / 60);
+    return `${hours}h`;
+  }
+
+  private buildPolymarketUrl(input: {
+    marketSlug?: string;
+    familySlug?: string;
+    childSlug?: string;
+  }): string {
+    if (input.familySlug && input.childSlug) {
+      return `https://polymarket.com/event/${input.familySlug}/${input.childSlug}`;
+    }
+
+    if (input.familySlug) {
+      return `https://polymarket.com/event/${input.familySlug}`;
+    }
+
+    return `https://polymarket.com/event/${input.marketSlug ?? ""}`;
   }
 }
