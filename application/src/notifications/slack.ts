@@ -770,10 +770,6 @@ export class SlackNotifier {
     familySlug?: string;
     childSlug?: string;
   }): string {
-    if (input.familySlug && input.childSlug) {
-      return `https://polymarket.com/event/${input.familySlug}/${input.childSlug}`;
-    }
-
     if (input.familySlug) {
       return `https://polymarket.com/event/${input.familySlug}`;
     }
