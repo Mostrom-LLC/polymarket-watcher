@@ -220,7 +220,7 @@ export class MarketRecommender {
           })
           .join("\n");
 
-    const prompt = `You are analyzing a Polymarket market that is closing soon. Give a trading-style recommendation for whether a user should vote YES, vote NO, or HOLD/SKIP.
+    const prompt = `You are analyzing a Polymarket market. Give a trading-style recommendation for whether a user should vote YES, vote NO, or HOLD/SKIP.
 
 Market: ${market.question}
 Current odds: YES ${(signals.yesPrice * 100).toFixed(1)}%, NO ${(signals.noPrice * 100).toFixed(1)}%

@@ -132,6 +132,43 @@ describe("GammaApiClient", () => {
       expect(events[0]?.title).toBe("2024 Election");
       expect(events[0]?.volume).toBe(10000000);
     });
+
+    it("accepts numeric event volume and liquidity from the live Gamma API", async () => {
+      const mockEvents = [
+        {
+          id: "event-2",
+          title: "Iran Ceasefire",
+          slug: "iran-ceasefire",
+          volume: 21415981,
+          liquidity: 7713516,
+          markets: [
+            {
+              id: "market-1",
+              question: "US x Iran ceasefire by March 15?",
+              conditionId: "cond-1",
+              slug: "us-x-iran-ceasefire-by-march-15",
+              active: true,
+              closed: false,
+              volume: 7713516,
+              liquidity: 6621740,
+            },
+          ],
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockEvents),
+      });
+
+      const events = await client.getEvents();
+
+      expect(events).toHaveLength(1);
+      expect(events[0]?.volume).toBe(21415981);
+      expect(events[0]?.liquidity).toBe(7713516);
+      expect(events[0]?.markets?.[0]?.volume).toBe(7713516);
+      expect(events[0]?.markets?.[0]?.liquidity).toBe(6621740);
+    });
   });
 
   describe("getMarketsClosingSoon", () => {

@@ -4,7 +4,7 @@
 # Topics to monitor
 markets:
   # Note: "slug" currently behaves like a topic/category keyword, not an exact Polymarket market slug.
-  # The discovery workflow fetches many closing-soon markets and uses Gemini to match them to these topics.
+  # The discovery workflow fetches active markets and uses Gemini to match them to these topics.
   - slug: "trump"
     enabled: true
   - slug: "geopolitics"

@@ -50,7 +50,7 @@ declare module "express" {
   
   export interface Express extends Application {
     (): Application;
-    json(): RequestHandler;
+    json(options?: { limit?: string | number }): RequestHandler;
     urlencoded(options?: { extended?: boolean }): RequestHandler;
     static(root: string): RequestHandler;
   }

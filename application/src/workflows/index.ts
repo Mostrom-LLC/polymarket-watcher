@@ -9,9 +9,9 @@ import { analyzeWhaleTrades } from "../agents/whale-analyzer.js";
 import { SlackNotifier, type MarketAlert, type WhaleAlert, type DailySummary } from "../notifications/slack.js";
 import { getConfig } from "../config/loader.js";
 import {
+  isBinaryYesNoMarket,
   normalizeOutcomeLabel,
   type GammaEvent,
-  supportsClosingSoonWhaleAlerts,
   type NormalizedMarket,
   type NormalizedTrade,
 } from "../api/types.js";
@@ -32,7 +32,6 @@ export const inngest = new Inngest({
 });
 
 export const WHALE_THRESHOLD_USD = 10000;
-export const MARKET_CLOSE_WINDOW_HOURS = 48;
 export const SURVEILLANCE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export const SURVEILLANCE_EVENT_FETCH_LIMIT = 200;
 export const SURVEILLANCE_MAX_FAMILIES_PER_RUN = 25;
@@ -102,15 +101,6 @@ function hydrateMarketVoteRecommendation(data: unknown): MarketVoteRecommendatio
     confidence: recommendation.confidence as "HIGH" | "MEDIUM" | "LOW",
     reasoning: recommendation.reasoning as string,
   };
-}
-
-export function closesWithinHours(market: NormalizedMarket, hours: number): boolean {
-  if (!supportsClosingSoonWhaleAlerts(market)) {
-    return false;
-  }
-
-  const msUntilClose = market.endDate.getTime() - Date.now();
-  return msUntilClose > 0 && msUntilClose <= hours * 60 * 60 * 1000;
 }
 
 export function hasMinimumWhaleTrade(trades: NormalizedTrade[], minimumUsd: number = WHALE_THRESHOLD_USD): boolean {
@@ -404,7 +394,7 @@ async function buildFamilySurveillanceInputs(
 // =============================================================================
 
 /**
- * Discover markets closing today and filter by topics
+ * Discover active topic-relevant binary markets and cache them for trade monitoring
  * Runs every 15 minutes per AC
  */
 const discoverMarkets = inngest.createFunction(
@@ -420,18 +410,18 @@ const discoverMarkets = inngest.createFunction(
     const gammaApi = new GammaApiClient();
     const cache = getMarketCache(config.env.REDIS_URL);
 
-    // Step 1: Fetch markets closing in next 48 hours
-    const marketsRaw = await step.run("fetch-closing-markets", async () => {
-      const closingSoon = await gammaApi.getMarketsClosingSoon(MARKET_CLOSE_WINDOW_HOURS);
-      console.log(`[discover-markets] Found ${closingSoon.length} markets closing in ${MARKET_CLOSE_WINDOW_HOURS}h`);
-      return closingSoon.map((m) => gammaApi.normalizeMarket(m));
+    // Step 1: Fetch active markets instead of restricting to a closing-soon window.
+    const marketsRaw = await step.run("fetch-active-markets", async () => {
+      const activeMarkets = await gammaApi.getMarkets({ active: true, closed: false });
+      console.log(`[discover-markets] Found ${activeMarkets.length} active markets`);
+      return activeMarkets.map((m) => gammaApi.normalizeMarket(m));
     });
 
     // Hydrate the markets (reconstruct Date objects)
     const markets = (marketsRaw as unknown[]).map(hydrateMarket);
 
     if (markets.length === 0) {
-      console.log(`[discover-markets] No markets found closing in ${MARKET_CLOSE_WINDOW_HOURS}h`);
+      console.log("[discover-markets] No active markets found");
       return { scanned: 0, matched: 0 };
     }
 
@@ -439,12 +429,13 @@ const discoverMarkets = inngest.createFunction(
     const topics = config.user.markets.map((m) => m.slug);
     
     if (topics.length === 0) {
-      // Cache all closing markets if no topic filter
+      const supportedMarkets = markets.filter((market) => isBinaryYesNoMarket(market));
+
       await step.run("cache-all-markets", async () => {
-        await cache.setTodayMarkets(markets);
+        await cache.setTodayMarkets(supportedMarkets);
       });
-      console.log(`[discover-markets] Cached ${markets.length} markets (no topic filter)`);
-      return { scanned: markets.length, matched: markets.length };
+      console.log(`[discover-markets] Cached ${supportedMarkets.length} active binary markets (no topic filter)`);
+      return { scanned: markets.length, matched: supportedMarkets.length };
     }
 
     // Step 3: Classify markets by topics (using batchClassify)
@@ -463,11 +454,11 @@ const discoverMarkets = inngest.createFunction(
     const matchedMarketsRaw = classificationResults;
 
     const matchedMarkets = (matchedMarketsRaw as unknown[]).map(hydrateMarket);
-    const supportedMarkets = matchedMarkets.filter((market) => supportsClosingSoonWhaleAlerts(market));
+    const supportedMarkets = matchedMarkets.filter((market) => isBinaryYesNoMarket(market));
     const skippedUnsupportedCount = matchedMarkets.length - supportedMarkets.length;
 
     if (skippedUnsupportedCount > 0) {
-      console.log(`[discover-markets] Skipping ${skippedUnsupportedCount} non-binary or missing-date markets`);
+      console.log(`[discover-markets] Skipping ${skippedUnsupportedCount} non-binary markets`);
     }
 
     // Step 4: Cache matched markets
@@ -524,12 +515,8 @@ const monitorTrades = inngest.createFunction(
 
     // Step 2: Check each market for whale activity
     for (const market of markets) {
-      if (!supportsClosingSoonWhaleAlerts(market)) {
+      if (!isBinaryYesNoMarket(market)) {
         console.log(`[monitor-trades] Skipping unsupported market structure: ${market.question}`);
-        continue;
-      }
-
-      if (!closesWithinHours(market, MARKET_CLOSE_WINDOW_HOURS)) {
         continue;
       }
 
