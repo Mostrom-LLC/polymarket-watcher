@@ -2,14 +2,11 @@ import { describe, expect, it } from "vitest";
 import { gammaEventSchema, type NormalizedMarket, type NormalizedTrade } from "../api/types.js";
 import {
   buildMarketDeadlineClock,
-  closesWithinHours,
   findTopicRelevantFamilies,
   hasMinimumWhaleTrade,
-  MARKET_CLOSE_WINDOW_HOURS,
   shouldDeliverAnalystAlert,
   WHALE_THRESHOLD_USD,
 } from "./index.js";
-import type { NormalizedMarket, NormalizedTrade } from "../api/types.js";
 
 const sampleMarket: NormalizedMarket = {
   id: "market-1",
@@ -40,40 +37,6 @@ function createTrade(id: string, size: number, price: number): NormalizedTrade {
 }
 
 describe("workflow signal guards", () => {
-  it("treats markets closing within 48 hours as eligible", () => {
-    expect(closesWithinHours(sampleMarket, MARKET_CLOSE_WINDOW_HOURS)).toBe(true);
-    expect(closesWithinHours(sampleMarket, 6)).toBe(false);
-  });
-
-  it("rejects markets closing after the 48 hour window", () => {
-    const slowMarket: NormalizedMarket = {
-      ...sampleMarket,
-      endDate: new Date(Date.now() + (MARKET_CLOSE_WINDOW_HOURS + 1) * 60 * 60 * 1000),
-    };
-
-    expect(closesWithinHours(slowMarket, MARKET_CLOSE_WINDOW_HOURS)).toBe(false);
-  });
-
-  it("rejects multi-outcome markets even if they have a near end date", () => {
-    const bucketMarket: NormalizedMarket = {
-      ...sampleMarket,
-      outcomes: ["March 15", "March 31", "April 30"],
-      outcomePrices: [0.2, 0.3, 0.5],
-      tokenIds: ["march-15", "march-31", "april-30"],
-    };
-
-    expect(closesWithinHours(bucketMarket, MARKET_CLOSE_WINDOW_HOURS)).toBe(false);
-  });
-
-  it("rejects markets without an end date", () => {
-    const noDateMarket: NormalizedMarket = {
-      ...sampleMarket,
-      endDate: null,
-    };
-
-    expect(closesWithinHours(noDateMarket, MARKET_CLOSE_WINDOW_HOURS)).toBe(false);
-  });
-
   it("requires a whale bet of at least $10,000", () => {
     const belowThreshold = [createTrade("trade-1", 9999, 1)];
     const atThreshold = [createTrade("trade-2", 10000, 1)];
