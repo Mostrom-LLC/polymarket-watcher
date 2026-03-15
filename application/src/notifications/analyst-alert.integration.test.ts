@@ -6,8 +6,13 @@ import type { AnalystAlert } from "../surveillance/alert-pipeline.js";
 const slackBotToken = process.env.SLACK_BOT_TOKEN;
 const slackChannel = process.env.SLACK_CHANNEL_ID;
 
+function getActionUrl(message: { blocks?: Array<{ type?: string; elements?: Array<{ url?: string }> }> }): string | null {
+  const actionBlock = message.blocks?.find((block) => block.type === "actions");
+  return actionBlock?.elements?.[0]?.url ?? null;
+}
+
 describe.skipIf(!slackBotToken || !slackChannel)("Analyst alert integration", () => {
-  it("posts a real analyst surveillance alert to the configured Slack channel", async () => {
+  it("posts a real analyst surveillance alert with a valid grouped-market Polymarket URL", async () => {
     const notifier = new SlackNotifier(slackBotToken!, slackChannel!);
     const slackClient = new WebClient(slackBotToken!);
 
@@ -63,7 +68,22 @@ describe.skipIf(!slackBotToken || !slackChannel)("Analyst alert integration", ()
     };
 
     const result = await notifier.sendAnalystAlert(alert, slackChannel);
+    const history = await slackClient.conversations.history({
+      channel: slackChannel!,
+      latest: result?.ts,
+      oldest: result?.ts,
+      inclusive: true,
+      limit: 1,
+    });
+    const postedMessage = history.messages?.[0] as { text?: string; blocks?: Array<{ type?: string; elements?: Array<{ url?: string }> }> } | undefined;
+    const actionUrl = postedMessage ? getActionUrl(postedMessage) : null;
+    const urlResponse = actionUrl ? await fetch(actionUrl) : null;
 
     expect(result?.ok).toBe(true);
+    expect(postedMessage?.text).toContain("MARKET ACTIVITY");
+    expect(actionUrl).toBe(
+      "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-ends-on-march-21-2026"
+    );
+    expect(urlResponse?.status).toBe(200);
   }, 30000);
 });

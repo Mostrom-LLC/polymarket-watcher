@@ -305,7 +305,7 @@ describe("SlackNotifier", () => {
       expect(tradeBlock?.text?.text).toContain("wallet_age: 2h");
       expect(recommendationBlock?.text?.text).toContain("Lean YES");
       expect(actionBlock?.elements?.[0]?.url).toBe(
-        "https://polymarket.com/event/military-action-against-iran-ends-on"
+        "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-ends-on-march-21-2026"
       );
     });
   });
