@@ -103,6 +103,7 @@ describe("buildAnalystAlert", () => {
     expect(alert.evidence).toContain("adjacent thresholds moved together");
     expect(alert.clusterCount).toBe(1);
     expect(alert.marketLabel).toBe("Military action against Iran ends on Mar 21");
+    expect(alert.marketChildSlug).toBe("military-action-against-iran-ends-on-march-21-2026");
     expect(alert.direction).toBe("Heavy YES buying");
     expect(alert.priceMove.fromPrice).toBeCloseTo(0.28, 2);
     expect(alert.priceMove.toPrice).toBeCloseTo(0.39, 2);
@@ -189,7 +190,140 @@ describe("buildAnalystAlert", () => {
     expect(alert.evidence).toContain("timestamp source: trusted_news");
     expect(alert.summary).toContain("rotation");
     expect(alert.topWallets[0]?.wallet).toBe("0xccc");
+    expect(alert.marketChildSlug).toBe("will-marco-rubio-win-the-2028-republican-presidential-nomination");
     expect(alert.direction).toBe("Heavy NO buying");
     expect(alert.recommendation).toBe("Lean NO");
+  });
+
+  it("prefers the dominant family leg over a tiny anomaly child and reports the largest trade by size", () => {
+    const alert = buildAnalystAlert({
+      family: {
+        slug: "military-action-against-iran-ends-on",
+        title: "Military action against Iran ends on...?",
+        classification: "grouped_exact_date",
+        childMarkets: [
+          {
+            id: "child-21",
+            slug: "military-action-against-iran-ends-on-march-21-2026",
+            question: "Military action against Iran ends on Mar 21?",
+            endDate: new Date("2026-03-21T00:00:00Z"),
+            groupItemTitle: "Mar 21",
+            groupItemThreshold: 21,
+            outcomes: ["Yes", "No"],
+            outcomePrices: [0.01, 0.99],
+            tokenIds: ["yes-21", "no-21"],
+            active: true,
+            closed: false,
+            liquidity: 83000,
+            volume: 83300,
+          },
+          {
+            id: "child-through",
+            slug: "military-action-against-iran-continues-through-march-31-2026",
+            question: "Military action through March 31?",
+            endDate: new Date("2026-03-31T00:00:00Z"),
+            groupItemTitle: "Through Mar 31",
+            groupItemThreshold: 31,
+            outcomes: ["Yes", "No"],
+            outcomePrices: [0.83, 0.17],
+            tokenIds: ["yes-through", "no-through"],
+            active: true,
+            closed: false,
+            liquidity: 147000,
+            volume: 296000,
+          },
+        ],
+      },
+      anomaly: {
+        pattern: "adjacent_bucket_spike",
+        severity: "high",
+        impactedChildren: [
+          "military-action-against-iran-ends-on-march-21-2026",
+        ],
+        reasons: ["adjacent thresholds moved together"],
+      },
+      eventClock: {
+        occurredAt: new Date("2026-03-12T13:00:00Z"),
+        source: "official_source",
+        publishedAt: null,
+      },
+      walletFindings: [
+        {
+          wallet: "0xsmall",
+          childSlug: "military-action-against-iran-ends-on-march-21-2026",
+          score: 91,
+          band: "high",
+          reasons: ["new or low-history wallet"],
+          priorActivityCount: 0,
+          repeatedPreEventWins: 1,
+          realizedPnlUsd: 0,
+          currentExposureUsd: 48000,
+          tradeDirection: "YES",
+          tradePrice: 0.31,
+          largestTradeUsd: 48000,
+          walletAgeMinutes: 120,
+        },
+        {
+          wallet: "0xbig",
+          childSlug: "military-action-against-iran-continues-through-march-31-2026",
+          score: 76,
+          band: "high",
+          reasons: ["large size relative to liquidity"],
+          priorActivityCount: 2,
+          repeatedPreEventWins: 0,
+          realizedPnlUsd: 0,
+          currentExposureUsd: 92000,
+          tradeDirection: "YES",
+          tradePrice: 0.79,
+          largestTradeUsd: 92000,
+          walletAgeMinutes: 35,
+        },
+      ],
+      childSnapshots: [
+        {
+          slug: "military-action-against-iran-ends-on-march-21-2026",
+          label: "Mar 21",
+          thresholdIndex: 21,
+          currentPrice: 0.01,
+          priceChange5m: 0,
+          priceChange1h: 0.01,
+          volume1h: 1800,
+          volume24h: 83300,
+          liquidity: 83000,
+          openInterest: 0,
+        },
+        {
+          slug: "military-action-against-iran-continues-through-march-31-2026",
+          label: "Through Mar 31",
+          thresholdIndex: 31,
+          currentPrice: 0.83,
+          priceChange5m: 0.02,
+          priceChange1h: 0.04,
+          volume1h: 41000,
+          volume24h: 296000,
+          liquidity: 147000,
+          openInterest: 0,
+        },
+      ],
+      clusters: [
+        {
+          familySlug: "military-action-against-iran-ends-on",
+          wallets: ["0xsmall", "0xbig"],
+          reasons: ["same family entry window"],
+        },
+      ],
+      generatedAt: new Date("2026-03-12T12:20:00Z"),
+    });
+
+    expect(alert.marketLabel).toBe("Military action through March 31");
+    expect(alert.marketChildSlug).toBe("military-action-against-iran-continues-through-march-31-2026");
+    expect(alert.direction).toBe("Heavy YES buying");
+    expect(alert.priceMove.fromPrice).toBeCloseTo(0.79, 2);
+    expect(alert.priceMove.toPrice).toBeCloseTo(0.83, 2);
+    expect(alert.largestTrade.wallet).toBe("0xbig");
+    expect(alert.largestTrade.childSlug).toBe("military-action-against-iran-continues-through-march-31-2026");
+    expect(alert.largestTrade.notionalUsd).toBe(92000);
+    expect(alert.largestTrade.walletAgeMinutes).toBe(35);
+    expect(alert.recommendation).toBe("Lean YES");
   });
 });

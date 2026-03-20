@@ -38,10 +38,9 @@ docker compose -f infrastructure/docker-compose.yml logs -f polymarket-watcher
 
 ## What It Does
 
-The service currently runs four scheduled jobs:
+The service currently runs three scheduled jobs:
 
 - `discover-markets`: finds active binary markets that match your configured topics
-- `monitor-trades`: watches tracked binary markets for large trade activity without a closing-soon requirement
 - `monitor-surveillance`: watches grouped market families and multi-contract markets for anomalous activity
 - `daily-summary`: posts a daily operational summary
 
@@ -103,7 +102,7 @@ That suite includes:
 
 - real Gemini integration tests
 - real Polymarket public Data API integration tests
-- real Slack post tests against the configured app channel path
+- real Slack post tests against the configured app channel path for the consolidated `MARKET ACTIVITY` alert
 
 ## License
 
