@@ -19,6 +19,46 @@ markets:
     enabled: true
   - slug: "trade war"
     enabled: true
+  - slug: "bitcoin"
+    enabled: true
+  - slug: "ethereum"
+    enabled: true
+  - slug: "crypto"
+    enabled: true
+  - slug: "solana"
+    enabled: true
+  - slug: "fed"
+    enabled: true
+  - slug: "rates"
+    enabled: true
+  - slug: "inflation"
+    enabled: true
+  - slug: "recession"
+    enabled: true
+  - slug: "china"
+    enabled: true
+  - slug: "taiwan"
+    enabled: true
+  - slug: "russia"
+    enabled: true
+  - slug: "ukraine"
+    enabled: true
+  - slug: "israel"
+    enabled: true
+  - slug: "oil"
+    enabled: true
+  - slug: "tesla"
+    enabled: true
+  - slug: "nvidia"
+    enabled: true
+  - slug: "earnings"
+    enabled: true
+  - slug: "election"
+    enabled: true
+  - slug: "congress"
+    enabled: true
+  - slug: "supreme court"
+    enabled: true
     # Alert thresholds
     thresholds:
       # Alert when price moves more than X% in Y minutes

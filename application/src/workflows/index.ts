@@ -112,7 +112,7 @@ export function shouldDeliverAnalystAlert(verdict: AnalystVerdict): boolean {
 }
 
 function isSurveillanceFamily(family: MarketFamily): boolean {
-  return family.classification !== "standalone_binary" && family.classification !== "grouped_generic";
+  return family.childMarkets.length > 0;
 }
 
 function familyMatchesTopics(family: MarketFamily, topics: string[]): boolean {
@@ -370,7 +370,9 @@ async function buildFamilySurveillanceInputs(
             ? "date_threshold"
             : family.classification === "candidate_field"
               ? "candidate_field"
-              : "mention_count",
+              : family.classification === "mention_count_family"
+                ? "mention_count"
+                : "broad_binary",
       priorActivityCount: activity.length,
       tradeDirection: aggregate.largestTradeDirection,
       tradePrice: aggregate.largestTradePrice,
@@ -779,4 +781,4 @@ const monitorSurveillance = inngest.createFunction(
 /**
  * Export all workflow functions for Inngest registration
  */
-export const functions = [discoverMarkets, monitorTrades, monitorSurveillance, dailySummary];
+export const functions = [discoverMarkets, monitorSurveillance, dailySummary];

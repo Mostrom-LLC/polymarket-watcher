@@ -46,6 +46,7 @@ export interface AnalystPriceMove {
 export interface AnalystLargestTrade {
   wallet: string;
   childSlug: string;
+  contractLabel?: string | null;
   notionalUsd: number;
   direction: "YES" | "NO" | "UNKNOWN";
   price: number | null;
@@ -62,6 +63,8 @@ export interface AnalystAlert {
   anomalyPattern: FamilyAnomalyResult["pattern"];
   anomalySeverity: FamilyAnomalyResult["severity"];
   marketLabel: string;
+  marketChildSlug?: string | null;
+  marketChildLabel?: string | null;
   direction: string;
   priceMove: AnalystPriceMove;
   largestTrade: AnalystLargestTrade;
@@ -114,6 +117,67 @@ function getPrimaryChildSlug(input: AnalystAlertInput): string | null {
   return input.anomaly.impactedChildren[0] ?? input.childSnapshots[0]?.slug ?? input.walletFindings[0]?.childSlug ?? null;
 }
 
+function rankSnapshot(snapshot: FamilyChildSnapshot): number {
+  return (
+    snapshot.currentPrice * 1000 +
+    snapshot.volume24h / 1000 +
+    snapshot.liquidity / 2000 +
+    snapshot.volume1h / 5000
+  );
+}
+
+function pickDominantSnapshot(snapshots: readonly FamilyChildSnapshot[]): FamilyChildSnapshot | undefined {
+  return [...snapshots].sort((left, right) => rankSnapshot(right) - rankSnapshot(left))[0];
+}
+
+function shouldPreferDominantSnapshot(
+  anomalySnapshot: FamilyChildSnapshot | undefined,
+  dominantSnapshot: FamilyChildSnapshot | undefined
+): boolean {
+  if (!dominantSnapshot) {
+    return false;
+  }
+
+  if (!anomalySnapshot) {
+    return true;
+  }
+
+  if (anomalySnapshot.slug === dominantSnapshot.slug) {
+    return true;
+  }
+
+  const relativePriceShare = dominantSnapshot.currentPrice > 0
+    ? anomalySnapshot.currentPrice / dominantSnapshot.currentPrice
+    : 0;
+  const anomalyHasMeaningfulShare =
+    anomalySnapshot.currentPrice >= 0.05 ||
+    (
+      relativePriceShare >= 0.33 &&
+      (
+        anomalySnapshot.volume24h >= dominantSnapshot.volume24h * 0.5 ||
+        anomalySnapshot.liquidity >= dominantSnapshot.liquidity * 0.5
+      )
+    );
+  const dominantClearlyLeads =
+    dominantSnapshot.currentPrice >= Math.max(0.15, anomalySnapshot.currentPrice * 3) &&
+    dominantSnapshot.volume24h >= anomalySnapshot.volume24h * 1.5 &&
+    dominantSnapshot.liquidity >= anomalySnapshot.liquidity * 1.5;
+
+  return dominantClearlyLeads && !anomalyHasMeaningfulShare;
+}
+
+function pickPrimarySnapshot(input: AnalystAlertInput): FamilyChildSnapshot | undefined {
+  const anomalyChildSlug = getPrimaryChildSlug(input);
+  const anomalySnapshot = input.childSnapshots.find((child) => child.slug === anomalyChildSlug);
+  const dominantSnapshot = pickDominantSnapshot(input.childSnapshots);
+
+  if (shouldPreferDominantSnapshot(anomalySnapshot, dominantSnapshot)) {
+    return dominantSnapshot;
+  }
+
+  return anomalySnapshot ?? dominantSnapshot ?? input.childSnapshots[0];
+}
+
 function formatMarketLabel(familyTitle: string, question: string): string {
   const trimmedQuestion = question.replace(/\?$/, "").trim();
   const prefix = familyTitle.replace(/\.\.\.\?$/, "").trim();
@@ -150,6 +214,32 @@ function buildDirectionLabel(wallet: AnalystWalletFinding | undefined, snapshot:
   return "Mixed pressure";
 }
 
+function buildRecommendation(wallet: AnalystWalletFinding | undefined, snapshot: FamilyChildSnapshot | undefined): string {
+  if (wallet?.tradeDirection === "YES") {
+    return "Lean YES";
+  }
+
+  if (wallet?.tradeDirection === "NO") {
+    return "Lean NO";
+  }
+
+  const movement = snapshot
+    ? Math.abs(snapshot.priceChange1h) >= Math.abs(snapshot.priceChange5m)
+      ? snapshot.priceChange1h
+      : snapshot.priceChange5m
+    : 0;
+
+  if (movement > 0) {
+    return "Lean YES";
+  }
+
+  if (movement < 0) {
+    return "Lean NO";
+  }
+
+  return "Hold";
+}
+
 function buildPriceMove(snapshot: FamilyChildSnapshot | undefined): AnalystPriceMove {
   if (!snapshot) {
     return {
@@ -170,10 +260,32 @@ function buildPriceMove(snapshot: FamilyChildSnapshot | undefined): AnalystPrice
   };
 }
 
-function buildLargestTrade(wallet: AnalystWalletFinding | undefined): AnalystLargestTrade {
+function buildContractLabel(
+  familyTitle: string,
+  child: Pick<MarketFamily["childMarkets"][number], "groupItemTitle" | "question"> | undefined
+): string | null {
+  if (!child) {
+    return null;
+  }
+
+  if (child.groupItemTitle) {
+    return child.groupItemTitle;
+  }
+
+  return formatMarketLabel(familyTitle, child.question);
+}
+
+function buildLargestTrade(
+  wallet: AnalystWalletFinding | undefined,
+  familyTitle: string,
+  childMarkets: readonly MarketFamily["childMarkets"][number][]
+): AnalystLargestTrade {
+  const child = childMarkets.find((candidate) => candidate.slug === wallet?.childSlug);
+
   return {
     wallet: wallet?.wallet ?? "unknown",
     childSlug: wallet?.childSlug ?? "",
+    contractLabel: buildContractLabel(familyTitle, child),
     notionalUsd: wallet?.largestTradeUsd ?? wallet?.currentExposureUsd ?? 0,
     direction: wallet?.tradeDirection ?? "UNKNOWN",
     price: wallet?.tradePrice ?? null,
@@ -181,13 +293,47 @@ function buildLargestTrade(wallet: AnalystWalletFinding | undefined): AnalystLar
   };
 }
 
+function getLargestTradeWallet(wallets: readonly AnalystWalletFinding[]): AnalystWalletFinding | undefined {
+  return [...wallets].sort((left, right) => {
+    const rightSize = right.largestTradeUsd ?? right.currentExposureUsd;
+    const leftSize = left.largestTradeUsd ?? left.currentExposureUsd;
+
+    if (rightSize !== leftSize) {
+      return rightSize - leftSize;
+    }
+
+    return right.score - left.score;
+  })[0];
+}
+
+function getPrimaryWallet(
+  primaryChildSlug: string | undefined,
+  wallets: readonly AnalystWalletFinding[]
+): AnalystWalletFinding | undefined {
+  const childWallets = wallets
+    .filter((wallet) => wallet.childSlug === primaryChildSlug)
+    .sort((left, right) => {
+      const rightSize = right.largestTradeUsd ?? right.currentExposureUsd;
+      const leftSize = left.largestTradeUsd ?? left.currentExposureUsd;
+
+      if (rightSize !== leftSize) {
+        return rightSize - leftSize;
+      }
+
+      return right.score - left.score;
+    });
+
+  return childWallets[0] ?? getLargestTradeWallet(wallets) ?? wallets[0];
+}
+
 export function buildAnalystAlert(input: AnalystAlertInput): AnalystAlert {
   const verdict = determineVerdict(input.anomaly, input.walletFindings, input.clusters);
   const topWallets = [...input.walletFindings].sort((left, right) => right.score - left.score).slice(0, 5);
-  const primaryChildSlug = getPrimaryChildSlug(input);
+  const primarySnapshot = pickPrimarySnapshot(input);
+  const primaryChildSlug = primarySnapshot?.slug ?? getPrimaryChildSlug(input);
   const primaryChild = input.family.childMarkets.find((child) => child.slug === primaryChildSlug) ?? input.family.childMarkets[0];
-  const primarySnapshot = input.childSnapshots.find((child) => child.slug === primaryChildSlug) ?? input.childSnapshots[0];
-  const primaryWallet = topWallets.find((wallet) => wallet.childSlug === primaryChildSlug) ?? topWallets[0];
+  const primaryWallet = getPrimaryWallet(primaryChildSlug ?? undefined, topWallets);
+  const largestTradeWallet = getLargestTradeWallet(topWallets);
   const evidence = unique([
     `timestamp source: ${input.eventClock.source}`,
     ...input.anomaly.reasons,
@@ -213,15 +359,12 @@ export function buildAnalystAlert(input: AnalystAlertInput): AnalystAlert {
     anomalyPattern: input.anomaly.pattern,
     anomalySeverity: input.anomaly.severity,
     marketLabel: formatMarketLabel(input.family.title, primaryChild?.question ?? input.family.title),
+    marketChildSlug: primaryChildSlug ?? null,
+    marketChildLabel: buildContractLabel(input.family.title, primaryChild),
     direction: buildDirectionLabel(primaryWallet, primarySnapshot),
     priceMove: buildPriceMove(primarySnapshot),
-    largestTrade: buildLargestTrade(primaryWallet),
-    recommendation:
-      primaryWallet?.tradeDirection === "YES"
-        ? "Lean YES"
-        : primaryWallet?.tradeDirection === "NO"
-          ? "Lean NO"
-          : "Hold",
+    largestTrade: buildLargestTrade(largestTradeWallet, input.family.title, input.family.childMarkets),
+    recommendation: buildRecommendation(primaryWallet, primarySnapshot),
     topWallets,
     clusterCount: input.clusters.length,
     evidence,

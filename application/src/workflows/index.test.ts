@@ -3,6 +3,7 @@ import { gammaEventSchema, type NormalizedMarket, type NormalizedTrade } from ".
 import {
   buildMarketDeadlineClock,
   findTopicRelevantFamilies,
+  functions,
   hasMinimumWhaleTrade,
   shouldDeliverAnalystAlert,
   WHALE_THRESHOLD_USD,
@@ -110,6 +111,92 @@ describe("workflow signal guards", () => {
     expect(relevant[0]?.classification).toBe("grouped_date_threshold");
   });
 
+  it("includes standalone binary markets in surveillance candidates when the topic matches", () => {
+    const events = [
+      gammaEventSchema.parse({
+        id: "event-standalone",
+        title: "Will Bitcoin hit $150k in 2026?",
+        slug: "bitcoin-150k-2026",
+        endDate: "2026-12-31T00:00:00Z",
+        showAllOutcomes: false,
+        markets: [
+          {
+            id: "market-standalone",
+            question: "Will Bitcoin hit $150k in 2026?",
+            conditionId: "cond-standalone",
+            slug: "bitcoin-150k-2026",
+            endDate: "2026-12-31T00:00:00Z",
+            liquidity: "220000",
+            volume: "900000",
+            active: true,
+            closed: false,
+            outcomes: "[\"Yes\", \"No\"]",
+            outcomePrices: "[\"0.21\", \"0.79\"]",
+            clobTokenIds: "[\"btc-yes\", \"btc-no\"]",
+          },
+        ],
+      }),
+    ];
+
+    const relevant = findTopicRelevantFamilies(events, ["bitcoin"]);
+
+    expect(relevant).toHaveLength(1);
+    expect(relevant[0]?.slug).toBe("bitcoin-150k-2026");
+    expect(relevant[0]?.classification).toBe("standalone_binary");
+  });
+
+  it("includes grouped generic event families in surveillance candidates when the topic matches", () => {
+    const events = [
+      gammaEventSchema.parse({
+        id: "event-generic",
+        title: "AI Megacap Winner 2026",
+        slug: "ai-megacap-winner-2026",
+        endDate: "2026-12-31T00:00:00Z",
+        showAllOutcomes: true,
+        markets: [
+          {
+            id: "market-nvidia",
+            question: "Will Nvidia outperform other AI megacaps in 2026?",
+            conditionId: "cond-nvidia",
+            slug: "will-nvidia-outperform-other-ai-megacaps-in-2026",
+            endDate: "2026-12-31T00:00:00Z",
+            groupItemTitle: "Nvidia",
+            groupItemThreshold: "1",
+            liquidity: "180000",
+            volume: "500000",
+            active: true,
+            closed: false,
+            outcomes: "[\"Yes\", \"No\"]",
+            outcomePrices: "[\"0.35\", \"0.65\"]",
+            clobTokenIds: "[\"nvda-yes\", \"nvda-no\"]",
+          },
+          {
+            id: "market-microsoft",
+            question: "Will Microsoft outperform other AI megacaps in 2026?",
+            conditionId: "cond-microsoft",
+            slug: "will-microsoft-outperform-other-ai-megacaps-in-2026",
+            endDate: "2026-12-31T00:00:00Z",
+            groupItemTitle: "Microsoft",
+            groupItemThreshold: "2",
+            liquidity: "170000",
+            volume: "470000",
+            active: true,
+            closed: false,
+            outcomes: "[\"Yes\", \"No\"]",
+            outcomePrices: "[\"0.25\", \"0.75\"]",
+            clobTokenIds: "[\"msft-yes\", \"msft-no\"]",
+          },
+        ],
+      }),
+    ];
+
+    const relevant = findTopicRelevantFamilies(events, ["nvidia", "ai"]);
+
+    expect(relevant).toHaveLength(1);
+    expect(relevant[0]?.slug).toBe("ai-megacap-winner-2026");
+    expect(relevant[0]?.classification).toBe("grouped_generic");
+  });
+
   it("derives a market_deadline clock from the earliest active child deadline", () => {
     const family = findTopicRelevantFamilies([
       gammaEventSchema.parse({
@@ -166,5 +253,14 @@ describe("workflow signal guards", () => {
     expect(shouldDeliverAnalystAlert("watchlist")).toBe(true);
     expect(shouldDeliverAnalystAlert("suspicious")).toBe(true);
     expect(shouldDeliverAnalystAlert("escalated")).toBe(true);
+  });
+
+  it("registers only the consolidated live alert workflows", () => {
+    const functionIds = functions.map((fn) => fn.id());
+
+    expect(functionIds).toContain("discover-markets");
+    expect(functionIds).toContain("monitor-surveillance");
+    expect(functionIds).toContain("daily-summary");
+    expect(functionIds).not.toContain("monitor-trades");
   });
 });

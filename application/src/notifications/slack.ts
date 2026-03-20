@@ -571,6 +571,53 @@ export class SlackNotifier {
     const walletAge = alert.largestTrade.walletAgeMinutes !== null
       ? `\nwallet_age: ${this.formatWalletAge(alert.largestTrade.walletAgeMinutes)}`
       : "";
+    const marketUrl = this.buildPolymarketUrl({
+      familySlug: alert.familySlug,
+      childSlug: alert.marketChildSlug ?? alert.largestTrade.childSlug,
+      ...(alert.marketChildLabel || alert.marketLabel
+        ? { textFragment: alert.marketChildLabel ?? alert.marketLabel }
+        : {}),
+    });
+    const largestBetUrl = this.buildPolymarketUrl({
+      familySlug: alert.familySlug,
+      childSlug: alert.largestTrade.childSlug,
+      ...(alert.largestTrade.contractLabel ? { textFragment: alert.largestTrade.contractLabel } : {}),
+    });
+    const actionElements: Array<{
+      type: "button";
+      text: {
+        type: "plain_text";
+        text: string;
+        emoji: boolean;
+      };
+      url: string;
+      action_id: string;
+    }> = [
+      {
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: "Open Market",
+          emoji: true,
+        },
+        url: marketUrl,
+        action_id: `open_surveillance_market_${alert.familySlug}`,
+      },
+    ];
+
+    if (alert.marketChildSlug && alert.marketChildSlug !== alert.largestTrade.childSlug) {
+      actionElements.push({
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: "Largest Bet",
+          emoji: true,
+        },
+        url: largestBetUrl,
+        action_id: `open_largest_trade_${alert.familySlug}`,
+      });
+    }
+
     const fallbackText = `🚨 MARKET ACTIVITY - ${alert.marketLabel}`;
     const blocks: (KnownBlock | Block)[] = [
       {
@@ -619,21 +666,7 @@ export class SlackNotifier {
       { type: "divider" },
       {
         type: "actions",
-        elements: [
-          {
-            type: "button",
-            text: {
-              type: "plain_text",
-              text: "Open Market",
-              emoji: true,
-            },
-            url: this.buildPolymarketUrl({
-              familySlug: alert.familySlug,
-              childSlug: alert.largestTrade.childSlug,
-            }),
-            action_id: `open_surveillance_market_${alert.familySlug}`,
-          },
-        ],
+        elements: actionElements,
       },
     ];
 
@@ -769,15 +802,20 @@ export class SlackNotifier {
     marketSlug?: string;
     familySlug?: string;
     childSlug?: string;
+    textFragment?: string;
   }): string {
+    const fragment = input.textFragment
+      ? `#:~:text=${encodeURIComponent(input.textFragment)}`
+      : "";
+
     if (input.familySlug && input.childSlug) {
-      return `https://polymarket.com/event/${input.familySlug}/${input.childSlug}`;
+      return `https://polymarket.com/event/${input.familySlug}/${input.childSlug}${fragment}`;
     }
 
     if (input.familySlug) {
-      return `https://polymarket.com/event/${input.familySlug}`;
+      return `https://polymarket.com/event/${input.familySlug}${fragment}`;
     }
 
-    return `https://polymarket.com/event/${input.marketSlug ?? ""}`;
+    return `https://polymarket.com/event/${input.marketSlug ?? ""}${fragment}`;
   }
 }

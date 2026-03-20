@@ -241,6 +241,8 @@ describe("SlackNotifier", () => {
         anomalyPattern: "adjacent_bucket_spike",
         anomalySeverity: "high",
         marketLabel: "Military action against Iran ends on Mar 21",
+        marketChildSlug: "military-action-against-iran-ends-on-march-21-2026",
+        marketChildLabel: "Mar 21",
         direction: "Heavy YES buying",
         priceMove: {
           fromPrice: 0.28,
@@ -250,6 +252,7 @@ describe("SlackNotifier", () => {
         largestTrade: {
           wallet: "0xaaa",
           childSlug: "military-action-against-iran-ends-on-march-21-2026",
+          contractLabel: "Mar 21",
           notionalUsd: 48000,
           direction: "YES",
           price: 0.31,
@@ -305,7 +308,60 @@ describe("SlackNotifier", () => {
       expect(tradeBlock?.text?.text).toContain("wallet_age: 2h");
       expect(recommendationBlock?.text?.text).toContain("Lean YES");
       expect(actionBlock?.elements?.[0]?.url).toBe(
-        "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-ends-on-march-21-2026"
+        "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-ends-on-march-21-2026#:~:text=Mar%2021"
+      );
+    });
+
+    it("adds a largest bet link when the alert focus and largest trade point at different contracts", async () => {
+      const alert: AnalystAlert = {
+        fingerprint: "military-action-against-iran-ends-on:adjacent_bucket_spike:through-march-31",
+        verdict: "escalated",
+        summary: "Military action against Iran ends on...?: adjacent_bucket_spike impacting 2 contracts",
+        familySlug: "military-action-against-iran-ends-on",
+        familyTitle: "Military action against Iran ends on...?",
+        classification: "grouped_exact_date",
+        anomalyPattern: "adjacent_bucket_spike",
+        anomalySeverity: "high",
+        marketLabel: "Military action through March 31",
+        marketChildSlug: "military-action-against-iran-continues-through-march-31-2026",
+        marketChildLabel: "Through Mar 31",
+        direction: "Heavy YES buying",
+        priceMove: {
+          fromPrice: 0.79,
+          toPrice: 0.83,
+          deltaPoints: 0.04,
+        },
+        largestTrade: {
+          wallet: "0xaaa",
+          childSlug: "military-action-against-iran-ends-on-march-21-2026",
+          contractLabel: "Mar 21",
+          notionalUsd: 48000,
+          direction: "YES",
+          price: 0.31,
+          walletAgeMinutes: 120,
+        },
+        recommendation: "Lean YES",
+        topWallets: [],
+        clusterCount: 1,
+        evidence: ["timestamp source: official_source"],
+        generatedAt: new Date("2026-03-12T12:20:00Z"),
+      };
+
+      await notifier.sendAnalystAlert(alert);
+
+      const payload = mockPostMessage.mock.calls[0]?.[0] as {
+        blocks: Array<{ type: string; elements?: Array<{ text?: { text: string }; url?: string }> }>;
+      };
+      const actionBlock = payload.blocks.find((block) => block.type === "actions");
+
+      expect(actionBlock?.elements).toHaveLength(2);
+      expect(actionBlock?.elements?.[0]?.text?.text).toBe("Open Market");
+      expect(actionBlock?.elements?.[0]?.url).toBe(
+        "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-continues-through-march-31-2026#:~:text=Through%20Mar%2031"
+      );
+      expect(actionBlock?.elements?.[1]?.text?.text).toBe("Largest Bet");
+      expect(actionBlock?.elements?.[1]?.url).toBe(
+        "https://polymarket.com/event/military-action-against-iran-ends-on/military-action-against-iran-ends-on-march-21-2026#:~:text=Mar%2021"
       );
     });
   });
