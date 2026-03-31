@@ -1,7 +1,7 @@
 {
   "display_information": {
     "name": "Polymarket Watcher",
-    "description": "Slack connector for OpenClaw"
+    "description": "Slack connector for Polymarket Watcher"
   },
   "features": {
     "bot_user": {

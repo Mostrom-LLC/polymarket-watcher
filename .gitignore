@@ -35,3 +35,7 @@ coverage/
 .docker/
 
 tasks/
+
+# Sensitive files
+CLAUDE.md
+AGENTS.md

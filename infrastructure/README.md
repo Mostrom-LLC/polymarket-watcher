@@ -15,5 +15,5 @@ AWS CDK infrastructure for deploying Polymarket Watcher to AWS Fargate.
 ```bash
 cd infrastructure
 npm install
-cdk synth --profile mostrom_mgmt && cdk deploy --profile mostrom_mgmt --all --require-approval never
+cdk synth --profile default && cdk deploy --profile default --all --require-approval never
 ```
